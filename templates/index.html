@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIP Client</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Door Control</h1>
+
+        <div id="registrationStatus" class="info-box">
+            <p>SIP Status:</p>
+            <p id="sipStatusText" class="status-text">Checking...</p>
+        </div>
+
+        <button id="callButton" class="call-button">Open Door</button>
+
+        <div id="statusMessage" class="status-message"></div>
+
+        <div class="info-text">
+            <p>Opens door via GSM call. Automatically hangs up 10 seconds after answer.</p>
+        </div>
+    </div>
+
+    <script>
+        const callButton = document.getElementById('callButton');
+        const statusMessage = document.getElementById('statusMessage');
+        const sipStatusText = document.getElementById('sipStatusText');
+        const registrationStatus = document.getElementById('registrationStatus');
+
+        // Check SIP registration status
+        async function checkStatus() {
+            try {
+                const response = await fetch('/status');
+                const data = await response.json();
+
+                if (data.registered) {
+                    sipStatusText.textContent = 'Registered & Ready';
+                    sipStatusText.className = 'status-text registered';
+                    registrationStatus.className = 'info-box registered';
+                    callButton.disabled = false;
+                } else if (data.sip_client_initialized) {
+                    sipStatusText.textContent = 'Connecting...';
+                    sipStatusText.className = 'status-text connecting';
+                    registrationStatus.className = 'info-box connecting';
+                    callButton.disabled = true;
+                } else {
+                    sipStatusText.textContent = 'Not Connected';
+                    sipStatusText.className = 'status-text error';
+                    registrationStatus.className = 'info-box error';
+                    callButton.disabled = true;
+                }
+            } catch (error) {
+                sipStatusText.textContent = 'Status Unknown';
+                sipStatusText.className = 'status-text error';
+                registrationStatus.className = 'info-box error';
+                callButton.disabled = true;
+            }
+        }
+
+        // Check status on page load
+        checkStatus();
+
+        // Refresh status every 5 seconds
+        setInterval(checkStatus, 5000);
+
+        callButton.addEventListener('click', async () => {
+            // Disable button during call
+            callButton.disabled = true;
+            callButton.textContent = 'Opening...';
+            statusMessage.textContent = 'Initiating door open...';
+            statusMessage.className = 'status-message info';
+
+            try {
+                const response = await fetch('/call', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    statusMessage.textContent = 'Door opening signal sent';
+                    statusMessage.className = 'status-message success';
+
+                    // Re-enable button after 10 seconds (when call ends)
+                    setTimeout(() => {
+                        callButton.disabled = false;
+                        callButton.textContent = 'Open Door';
+                        statusMessage.textContent = '';
+                        statusMessage.className = 'status-message';
+                    }, 11000);
+                } else {
+                    statusMessage.textContent = 'Error: ' + data.message;
+                    statusMessage.className = 'status-message error';
+                    // Re-check status in case registration was lost
+                    checkStatus();
+                }
+            } catch (error) {
+                statusMessage.textContent = 'Error: Failed to connect to server';
+                statusMessage.className = 'status-message error';
+                callButton.disabled = false;
+                callButton.textContent = 'Open Door';
+            }
+        });
+    </script>
+</body>
+</html>
