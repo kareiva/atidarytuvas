@@ -24,13 +24,22 @@ Flask Web Server (app.py)
     ↓
     Initializes on first request (before_request hook)
     ↓
+    Uses AppLogger (logger.py) for configurable verbosity
+    ↓
 SIP Client (sip_client.py)
+    ├── Receives AppLogger instance
     ├── SIPAccount (handles registration callbacks)
     │   └── onRegState() - monitors registration status
     ├── SIPCall (handles call state callbacks)
     │   ├── onCallState() - tracks call progression (100, 180, 200 codes)
     │   └── Auto-hangup timer (10 seconds after call answered)
     └── Thread-safe call management (threading.Lock)
+
+Logger (logger.py)
+    ├── AppLogger class with verbosity control
+    ├── LogLevel enum (CRITICAL=0, LOW=1, MEDIUM=2, HIGH=3)
+    ├── Default: CRITICAL (minimal output - production ready)
+    └── Specialized methods (sip_request, sip_response, call_event, etc.)
 ```
 
 ### Call Flow State Machine
@@ -150,6 +159,11 @@ All configuration is via `.env` file or environment variables:
   - The web interface creates a button for each configured target
 - **FLASK_PORT**: Web interface port (default: 5000)
 - **FLASK_DEBUG**: Flask debug mode (default: False)
+- **LOG_LEVEL**: Logging verbosity (default: CRITICAL if not set)
+  - **CRITICAL**: Startup, shutdown, and critical errors only (minimal output)
+  - **LOW**: Essential events (registration, call start/end, errors)
+  - **MEDIUM**: Include SIP response codes (100, 180, 200) and state changes
+  - **HIGH**: Full SIP protocol details and debugging information
 
 ## Critical Implementation Details
 
@@ -170,8 +184,30 @@ SIP call state is protected by `self.call_lock` (threading.Lock) in sip_client.p
 
 **Always acquire the lock before checking or modifying call state.**
 
-### Logging Format
+### Logging System
 
+The application uses a centralized logging system (logger.py) with configurable verbosity:
+
+**AppLogger class** - Provides methods for different message types:
+- `critical()` - Always shown (startup, shutdown, critical errors)
+- `essential()` - LOW+ (registration, call events, errors)
+- `info()` - MEDIUM+ (SIP responses, state changes)
+- `debug()` - HIGH only (full debug output)
+- `error()` - Always shown
+
+**Verbosity levels:**
+- **CRITICAL** (default): Minimal output - startup, shutdown, errors only
+- **LOW**: Essential events - registration, call start/end, important responses
+- **MEDIUM**: Includes all SIP response codes (100, 180, 200) and state changes
+- **HIGH**: Full SIP protocol details, tracebacks, and debugging
+
+**Default behavior (no LOG_LEVEL set):**
+- Only shows application startup/shutdown banners
+- Critical errors
+- No SIP registration details, no call flow logging
+- Ideal for production where you only want to know if something breaks
+
+**Logging format:**
 The application uses structured logging with visual indicators:
 - `──►` Outgoing SIP request (INVITE, BYE, REGISTER)
 - `◄──` Incoming SIP response (100, 180, 200, etc.)
@@ -182,6 +218,11 @@ The application uses structured logging with visual indicators:
 - `────` Response separators
 
 **Maintain this format when adding new logs** - it's specifically designed for troubleshooting SIP call flows.
+
+**Logger instances:**
+- `app.py` creates logger with name 'app'
+- `sip_client.py` receives logger with name 'sip_client'
+- Both share the same verbosity level from LOG_LEVEL environment variable
 
 ## Common SIP Response Codes
 
@@ -241,6 +282,20 @@ To add a new target (e.g., GARAGE, LOBBY):
 - Do not enable `threaded=True` or use threading in Flask routes
 - All SIP operations must use the global `sip_client` instance
 - Return JSON responses with `success` and `message` fields
+
+### Adding logging
+
+When adding new logging statements:
+- Use `logger.critical()` for startup/shutdown and critical errors (always shown)
+- Use `logger.essential()` for important events (shown at LOW+)
+- Use `logger.info()` for medium-verbosity messages (SIP responses, state changes - MEDIUM+)
+- Use `logger.debug()` for high-verbosity debug output (HIGH only)
+- Use `logger.error()` for errors (always shown)
+- Use specialized methods: `sip_request()`, `sip_response()`, `call_event()`, etc.
+- Do not use standard `logging.info()` - always use the AppLogger instance
+- Example: `self.logger.call_event("Call initiated")` instead of `logger.info("Call initiated")`
+
+**Important:** The default logging level is CRITICAL (minimal output). Most logging should use `essential()` or higher verbosity methods so it only appears when LOG_LEVEL is explicitly set.
 
 ### Changing auto-hangup timer
 

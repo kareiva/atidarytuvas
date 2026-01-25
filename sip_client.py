@@ -1,6 +1,6 @@
 import threading
 import time
-import logging
+from logger import AppLogger
 
 try:
     import pjsua2 as pj
@@ -14,16 +14,16 @@ except ImportError:
     print("=" * 60)
     raise
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Logger will be initialized by SIPClient
+logger = None
 
 
 class SIPAccount(pj.Account):
     """Custom Account class to handle registration callbacks."""
 
-    def __init__(self):
+    def __init__(self, app_logger: AppLogger):
         pj.Account.__init__(self)
+        self.logger = app_logger
 
     def onRegState(self, prm):
         """Called when registration state changes."""
@@ -31,18 +31,16 @@ class SIPAccount(pj.Account):
         status_code = ai.regStatus
         reason = prm.reason
 
-        if status_code == 200:
-            logger.info(f"◄── {status_code} OK (registration successful)")
-        else:
-            logger.info(f"◄── {status_code} {reason}")
+        self.logger.registration_event(status_code, reason)
 
 
 class SIPCall(pj.Call):
     """Custom Call class to handle call state callbacks."""
 
-    def __init__(self, account, sip_client=None):
+    def __init__(self, account, sip_client=None, app_logger: AppLogger = None):
         pj.Call.__init__(self, account)
         self.sip_client = sip_client
+        self.logger = app_logger
 
     def onCallState(self, prm):
         """Called when call state changes."""
@@ -52,32 +50,29 @@ class SIPCall(pj.Call):
         last_status = ci.lastStatusCode
         last_reason = ci.lastReason
 
-        logger.info("─" * 60)
-        logger.info(f"◄── SIP PROXY RESPONSE: {last_status}")
-
         # Map PJSIP states to readable messages
         if state == pj.PJSIP_INV_STATE_CALLING:
-            logger.info("    Calling - Sending INVITE")
+            self.logger.sip_state_change("Calling - Sending INVITE")
 
         elif state == pj.PJSIP_INV_STATE_INCOMING:
-            logger.info("    Incoming - Receiving call")
+            self.logger.sip_state_change("Incoming - Receiving call")
 
         elif state == pj.PJSIP_INV_STATE_EARLY:
             if last_status == 100:
-                logger.info("    Trying - Request received")
+                self.logger.sip_response(100, "Trying - Request received")
             elif last_status == 180:
-                logger.info("    Ringing - Destination is ringing")
-                logger.info("    ✓ Door opener phone is RINGING")
+                self.logger.sip_response(180, "Ringing - Destination is ringing")
+                self.logger.call_event("    ✓ Door opener phone is RINGING")
             elif last_status == 183:
-                logger.info("    Session Progress - Call progressing")
+                self.logger.sip_response(183, "Session Progress - Call progressing")
 
         elif state == pj.PJSIP_INV_STATE_CONNECTING:
-            logger.info("    Connecting - Call being connected")
+            self.logger.sip_state_change("Connecting - Call being connected")
 
         elif state == pj.PJSIP_INV_STATE_CONFIRMED:
-            logger.info("    OK - Call answered successfully")
-            logger.info("    ✓ Door opener ANSWERED the call")
-            logger.info("─" * 60)
+            self.logger.sip_response(200, "OK - Call answered successfully")
+            self.logger.call_event("    ✓ Call ANSWERED")
+            self.logger.sip_separator(major=False)
 
             # Schedule auto-hangup after 10 seconds
             if self.sip_client:
@@ -85,14 +80,14 @@ class SIPCall(pj.Call):
 
         elif state == pj.PJSIP_INV_STATE_DISCONNECTED:
             if last_status >= 400:
-                logger.info(f"    Error - {last_reason}")
+                self.logger.sip_response(last_status, f"Error - {last_reason}")
                 if last_status == 486:
-                    logger.info("    Busy Here - Line is busy")
+                    self.logger.error("    Busy Here - Line is busy")
                 elif last_status == 603:
-                    logger.info("    Decline - Call rejected")
+                    self.logger.error("    Decline - Call rejected")
             else:
-                logger.info("    Call ended")
-            logger.info("─" * 60)
+                self.logger.call_event("◄── CALL ENDED")
+            self.logger.sip_separator(major=False)
 
             # Cancel hangup timer if call ends
             if self.sip_client:
@@ -100,8 +95,8 @@ class SIPCall(pj.Call):
                 self.sip_client.current_call = None
 
         else:
-            logger.info(f"    State: {state_text}")
-            logger.info("─" * 60)
+            self.logger.sip_state_change(f"State: {state_text}")
+            self.logger.sip_separator(major=False)
 
     def onCallMediaState(self, prm):
         """Called when media state changes."""
@@ -113,7 +108,7 @@ class SIPCall(pj.Call):
 class SIPClient:
     """SIP client using PJSUA2 library."""
 
-    def __init__(self, proxy, username, password):
+    def __init__(self, proxy, username, password, app_logger: AppLogger = None):
         """
         Initialize the SIP client.
 
@@ -121,10 +116,12 @@ class SIPClient:
             proxy: SIP proxy server address (e.g., 'sips.peoplefone.lt:5060')
             username: SIP username
             password: SIP password
+            app_logger: AppLogger instance for logging
         """
         self.proxy = proxy
         self.username = username
         self.password = password
+        self.logger = app_logger
         self.endpoint = None
         self.account = None
         self.current_call = None
@@ -134,12 +131,10 @@ class SIPClient:
     def start(self):
         """Start the SIP client and register with the server."""
         try:
-            logger.info("=" * 60)
-            logger.info("INITIALIZING SIP CLIENT (PJSUA2)")
-            logger.info("=" * 60)
-            logger.info(f"Proxy:    {self.proxy}")
-            logger.info(f"Username: {self.username}")
-            logger.info("=" * 60)
+            self.logger.sip_section_start("INITIALIZING SIP CLIENT (PJSUA2)")
+            self.logger.sip_section_info("Proxy:", self.proxy)
+            self.logger.sip_section_info("Username:", self.username)
+            self.logger.sip_separator(major=True)
 
             # Create and initialize endpoint
             ep_cfg = pj.EpConfig()
@@ -162,7 +157,7 @@ class SIPClient:
             # Start the library
             self.endpoint.libStart()
 
-            logger.info("──► REGISTER (sending to proxy)")
+            self.logger.sip_request("REGISTER (sending to proxy)")
 
             # Create account configuration
             acc_cfg = pj.AccountConfig()
@@ -174,7 +169,7 @@ class SIPClient:
             acc_cfg.sipConfig.authCreds.append(cred)
 
             # Create the account
-            self.account = SIPAccount()
+            self.account = SIPAccount(self.logger)
             self.account.create(acc_cfg)
 
             # Wait briefly for registration
@@ -183,18 +178,18 @@ class SIPClient:
             # Check registration status
             ai = self.account.getInfo()
             if ai.regStatus == 200:
-                logger.info("=" * 60)
-                logger.info("✓ SIP CLIENT READY")
-                logger.info("=" * 60)
+                self.logger.sip_separator(major=True)
+                self.logger.critical("✓ SIP CLIENT READY")
+                self.logger.sip_separator(major=True)
                 return True
             else:
-                logger.warning(f"Registration status: {ai.regStatus} - {ai.regStatusText}")
+                self.logger.error(f"Registration status: {ai.regStatus} - {ai.regStatusText}")
                 return True  # Continue anyway, might still work
 
         except Exception as e:
-            logger.error(f"✗ SIP client initialization failed: {e}")
+            self.logger.error(f"✗ SIP client initialization failed: {e}")
             import traceback
-            logger.error(traceback.format_exc())
+            self.logger.debug(traceback.format_exc())
             return False
 
     def is_registered(self):
@@ -205,7 +200,7 @@ class SIPClient:
             ai = self.account.getInfo()
             return ai.regStatus == 200
         except Exception as e:
-            logger.error(f"✗ Error checking registration status: {e}")
+            self.logger.error(f"✗ Error checking registration status: {e}")
             return False
 
     def get_status(self):
@@ -230,7 +225,7 @@ class SIPClient:
         """
         try:
             if not self.endpoint or not self.account:
-                logger.error("✗ Cannot make call - SIP client not started")
+                self.logger.error("✗ Cannot make call - SIP client not started")
                 return {
                     'success': False,
                     'message': 'SIP client not started'
@@ -238,23 +233,20 @@ class SIPClient:
 
             with self.call_lock:
                 if self.current_call is not None:
-                    logger.warning("✗ Call already in progress")
+                    self.logger.error("✗ Call already in progress")
                     return {
                         'success': False,
                         'message': 'A call is already in progress'
                     }
 
-            logger.info("")
-            logger.info("=" * 60)
-            logger.info(f"INITIATING CALL TO: {phone_number}")
-            logger.info("=" * 60)
+            self.logger.sip_section_start(f"INITIATING CALL TO: {phone_number}")
 
             # Format SIP URI (include port as per working example)
             sip_uri = f"sip:{phone_number}@{self.proxy}"
-            logger.info(f"──► INVITE {sip_uri}")
+            self.logger.sip_request(f"INVITE {sip_uri}")
 
             # Create call
-            call = SIPCall(self.account, sip_client=self)
+            call = SIPCall(self.account, sip_client=self, app_logger=self.logger)
 
             # Make call with CallOpParam
             prm = pj.CallOpParam(True)  # True = use default settings
@@ -269,9 +261,9 @@ class SIPClient:
             }
 
         except Exception as e:
-            logger.error(f"✗ Failed to make call: {e}")
+            self.logger.error(f"✗ Failed to make call: {e}")
             import traceback
-            logger.error(traceback.format_exc())
+            self.logger.debug(traceback.format_exc())
             return {
                 'success': False,
                 'message': f'Failed to make call: {str(e)}'
@@ -286,11 +278,11 @@ class SIPClient:
 
                 self.hangup_timer = threading.Timer(10.0, self._auto_hangup)
                 self.hangup_timer.start()
-                logger.info("")
-                logger.info("⏱  Auto-hangup timer: 10 seconds")
-                logger.info("")
+                self.logger.essential("")
+                self.logger.timer_event("Auto-hangup timer: 10 seconds")
+                self.logger.essential("")
         except Exception as e:
-            logger.error(f"✗ Error scheduling hangup: {e}")
+            self.logger.error(f"✗ Error scheduling hangup: {e}")
 
     def _cancel_hangup_timer(self):
         """Cancel the hangup timer."""
@@ -300,28 +292,28 @@ class SIPClient:
                     self.hangup_timer.cancel()
                     self.hangup_timer = None
         except Exception as e:
-            logger.error(f"✗ Error cancelling timer: {e}")
+            self.logger.error(f"✗ Error cancelling timer: {e}")
 
     def _auto_hangup(self):
         """Automatically hang up the current call."""
         try:
-            logger.info("")
-            logger.info("─" * 60)
-            logger.info("⏱  AUTO-HANGUP: 10 seconds elapsed")
-            logger.info("─" * 60)
+            self.logger.essential("")
+            self.logger.sip_separator(major=False)
+            self.logger.call_event("⏱  AUTO-HANGUP: 10 seconds elapsed")
+            self.logger.sip_separator(major=False)
 
             with self.call_lock:
                 if self.current_call:
-                    logger.info("──► BYE (terminating call)")
+                    self.logger.sip_request("BYE (terminating call)")
                     # Hangup the call
                     prm = pj.CallOpParam()
                     self.current_call.hangup(prm)
                     self.current_call = None
 
         except Exception as e:
-            logger.error(f"✗ Error during auto hang-up: {e}")
+            self.logger.error(f"✗ Error during auto hang-up: {e}")
             import traceback
-            logger.error(traceback.format_exc())
+            self.logger.debug(traceback.format_exc())
 
     def stop(self):
         """Stop the SIP client."""
@@ -335,7 +327,7 @@ class SIPClient:
                 # Hangup active call
                 if self.current_call:
                     try:
-                        logger.info("──► BYE (hanging up active call)")
+                        self.logger.sip_request("BYE (hanging up active call)")
                         prm = pj.CallOpParam()
                         self.current_call.hangup(prm)
                     except:
@@ -359,7 +351,7 @@ class SIPClient:
                 except:
                     pass
 
-            logger.info("✓ SIP client stopped cleanly")
+            self.logger.success("✓ SIP client stopped cleanly")
 
         except Exception as e:
-            logger.error(f"✗ Error stopping SIP client: {e}")
+            self.logger.error(f"✗ Error stopping SIP client: {e}")

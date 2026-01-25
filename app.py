@@ -5,16 +5,19 @@ import sys
 from flask import Flask, render_template, jsonify, request
 from dotenv import load_dotenv
 from sip_client import SIPClient
+from logger import create_logger
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Disable Flask's default logging to prevent duplicates
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+# Create application logger with configured verbosity
+# Empty string = CRITICAL (minimal output), or set LOG_LEVEL=LOW/MEDIUM/HIGH
+LOG_LEVEL = os.getenv('LOG_LEVEL', '').upper()
+logger = create_logger('app', LOG_LEVEL)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -53,10 +56,12 @@ def init_sip_client():
     """Initialize and start the SIP client."""
     global sip_client
     try:
-        sip_client = SIPClient(SIP_PROXY, SIP_USERNAME, SIP_PASSWORD)
+        # Create a separate logger for SIP client
+        sip_logger = create_logger('sip_client', LOG_LEVEL)
+        sip_client = SIPClient(SIP_PROXY, SIP_USERNAME, SIP_PASSWORD, sip_logger)
         success = sip_client.start()
         if success:
-            logger.info("SIP client initialized successfully")
+            logger.essential("SIP client initialized successfully")
         else:
             logger.error("Failed to initialize SIP client")
         return success
@@ -108,7 +113,7 @@ def make_call():
 
         # Check if SIP client is initialized
         if not sip_client:
-            logger.info("SIP client not initialized, attempting to initialize...")
+            logger.essential("SIP client not initialized, attempting to initialize...")
             if not init_sip_client():
                 return jsonify({
                     'success': False,
@@ -181,19 +186,19 @@ def shutdown_handler():
     """Clean up resources on shutdown."""
     global sip_client
     if sip_client:
-        logger.info("Shutting down SIP client...")
+        logger.essential("Shutting down SIP client...")
         sip_client.stop()
         sip_client = None
 
 
 def signal_handler(sig, frame):
     """Handle SIGINT (Ctrl+C) signal."""
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("Received shutdown signal (Ctrl+C)")
-    logger.info("=" * 60)
+    logger.critical("")
+    logger.critical("=" * 60)
+    logger.critical("Received shutdown signal (Ctrl+C)")
+    logger.critical("=" * 60)
     shutdown_handler()
-    logger.info("Shutdown complete. Exiting...")
+    logger.critical("Shutdown complete. Exiting...")
     sys.exit(0)
 
 
@@ -207,18 +212,19 @@ if __name__ == '__main__':
     atexit.register(shutdown_handler)
 
     try:
-        logger.info("")
-        logger.info("=" * 60)
-        logger.info("STARTING GSM DOOR OPENER")
-        logger.info("=" * 60)
-        logger.info(f"Flask port:   {FLASK_PORT}")
-        logger.info(f"SIP proxy:    {SIP_PROXY}")
-        logger.info(f"Configured targets: {len(PHONE_NUMBERS)}")
+        logger.critical("")
+        logger.critical("=" * 60)
+        logger.critical("STARTING GSM DOOR OPENER")
+        logger.critical("=" * 60)
+        logger.essential(f"Flask port:   {FLASK_PORT}")
+        logger.essential(f"SIP proxy:    {SIP_PROXY}")
+        logger.essential(f"Log level:    {LOG_LEVEL if LOG_LEVEL else 'CRITICAL'}")
+        logger.essential(f"Configured targets: {len(PHONE_NUMBERS)}")
         for name, number in PHONE_NUMBERS.items():
-            logger.info(f"  {name}: {number}")
-        logger.info("=" * 60)
-        logger.info("Press Ctrl+C to stop")
-        logger.info("")
+            logger.essential(f"  {name}: {number}")
+        logger.critical("=" * 60)
+        logger.essential("Press Ctrl+C to stop")
+        logger.critical("")
 
         # Run Flask in single-threaded mode to avoid PJSIP threading issues
         # PJSIP requires thread registration - single-threaded is simpler for this use case

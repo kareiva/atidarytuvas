@@ -120,6 +120,11 @@ The application will start on `http://localhost:5000` (or the port specified in 
     - `PHONE_NUMBER_GARAGE=+1122334455`
 - `FLASK_PORT`: Port for the web interface (default: 5000)
 - `FLASK_DEBUG`: Enable Flask debug mode (default: False)
+- `LOG_LEVEL`: Logging verbosity (default: CRITICAL if not set)
+  - Not set or `CRITICAL`: Minimal output - startup/shutdown/errors only
+  - `LOW`: Essential events (registration, calls, errors)
+  - `MEDIUM`: Include SIP response codes and state changes
+  - `HIGH`: Full debug output with all SIP protocol details
 
 **Note on Phone Number Format:**
 The application automatically formats plain phone numbers as SIP URIs using the format `sip:number@proxy-domain`. If your SIP provider requires a different format, you can specify the full SIP URI directly in the phone number setting.
@@ -235,9 +240,73 @@ If you have issues installing pyVoIP, ensure you have:
 
 **Note for Python 3.13+:** The `audioop` module was removed from the standard library. This project includes `audioop-lts` in requirements.txt, which is a maintained fork that provides the necessary functionality for pyVoIP.
 
+## Logging Verbosity
+
+The application supports four logging levels controlled by the `LOG_LEVEL` environment variable:
+
+### CRITICAL (Default - No LOG_LEVEL set)
+Minimal output - only critical information:
+- Application startup/shutdown banners
+- Critical errors
+
+**Example output:**
+```
+============================================================
+STARTING GSM DOOR OPENER
+============================================================
+============================================================
+✓ SIP CLIENT READY
+============================================================
+```
+*No call details, no SIP protocol logging. Ideal for production when you only need to know if the service is running.*
+
+### LOW (Set LOG_LEVEL=LOW)
+Shows essential events:
+- All CRITICAL events
+- SIP registration status
+- Call initiated/ended
+- Important SIP responses (180 Ringing, 200 OK)
+- Configuration details
+
+**Example output:**
+```
+============================================================
+STARTING GSM DOOR OPENER
+============================================================
+Flask port:   5000
+SIP proxy:    sip.example.com
+Log level:    LOW
+Configured targets: 2
+  DOOR: +1234567890
+  GATE: +0987654321
+============================================================
+Press Ctrl+C to stop
+============================================================
+✓ SIP CLIENT READY
+============================================================
+──► INVITE
+◄── 180 Ringing
+◄── 200 OK
+⏱  Auto-hangup timer: 10 seconds
+◄── CALL ENDED
+```
+
+### MEDIUM (Set LOG_LEVEL=MEDIUM)
+Includes all LOW events plus:
+- All SIP response codes (100, 183, etc.)
+- Call state changes
+- Detailed SIP protocol flow
+
+### HIGH (Set LOG_LEVEL=HIGH)
+Full debugging output including:
+- All MEDIUM events
+- Stack traces on errors
+- Complete SIP protocol details
+- Internal state transitions
+
 ## Logs
 
-The application provides detailed logging of all SIP operations:
+The application provides configurable logging of SIP operations:
 
 ### Example Log Output for Successful Call:
 
