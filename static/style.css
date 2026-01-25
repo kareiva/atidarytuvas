@@ -32,9 +32,9 @@ h1 {
 
 .info-box {
     background: #f7f9fc;
-    border-radius: 8px;
-    padding: 20px;
-    margin-bottom: 30px;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
     border: 2px solid #e0e0e0;
     transition: all 0.3s ease;
 }
@@ -56,12 +56,12 @@ h1 {
 
 .info-box p:first-child {
     color: #666;
-    font-size: 14px;
-    margin-bottom: 8px;
+    font-size: 12px;
+    margin-bottom: 4px;
 }
 
 .status-text {
-    font-size: 24px;
+    font-size: 16px;
     font-weight: bold;
 }
 
@@ -77,6 +77,13 @@ h1 {
     color: #dc3545;
 }
 
+.buttons-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
 .call-button {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
@@ -88,7 +95,6 @@ h1 {
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
     width: 100%;
-    max-width: 300px;
 }
 
 .call-button:hover:not(:disabled) {

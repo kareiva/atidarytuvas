@@ -1,10 +1,12 @@
 # GSM Door Opener - SIP Client with Web Interface
 
-A lightweight Python-based SIP client with a Flask web interface for automated door opening via GSM call. Makes a call to a configured number (GSM door opener) which triggers the door to unlock. The call automatically hangs up after 10 seconds.
+A lightweight Python-based SIP client with a Flask web interface for automated door opening via GSM call. Supports multiple targets (DOOR, GATE, GARAGE, etc.) with individual phone numbers. Makes a call to the selected target which triggers the device to unlock. The call automatically hangs up after 10 seconds.
 
 ## Features
 
 - Simple web interface for door opening control
+- **Multiple targets support** - Configure multiple phone numbers (DOOR, GATE, GARAGE, etc.)
+- **Dynamic UI** - Buttons automatically generated for each configured target
 - **PJSUA2 (PJSIP) library** - Industry-standard, production-ready SIP stack
 - **Event-driven callbacks** - Real-time SIP response handling from proxy
 - **Clean SIP protocol logging** - Clear request/response pairs with visual indicators
@@ -94,28 +96,36 @@ The application will start on `http://localhost:5000` (or the port specified in 
 
 1. Open your web browser and navigate to `http://localhost:5000`
 2. Check the SIP registration status at the top:
-   - **Green (Registered & Ready)**: System is ready to open the door
+   - **Green (Registered & Ready)**: System is ready to open doors/gates
    - **Yellow (Connecting...)**: System is connecting to SIP server
    - **Red (Not Connected)**: System is not connected, check configuration
-3. Click the "Open Door" button to trigger the door opener
-4. When the call is answered by the GSM door opener, a 10-second timer starts
+3. Click any target button (e.g., "Open Door", "Open Gate") to trigger that specific device
+4. When the call is answered by the GSM device, a 10-second timer starts
 5. The call will automatically hang up 10 seconds after being answered
 6. If the call is not answered, no auto-hangup occurs
-7. Status messages will appear below the button showing the operation result
+7. Status messages will appear below the buttons showing the operation result
+8. All buttons are disabled during an active call to prevent concurrent calls
 
 ## Configuration Options
 
 - `SIP_PROXY`: Your SIP server address (e.g., sip.example.com or just example.com)
 - `SIP_USERNAME`: Your SIP account username
 - `SIP_PASSWORD`: Your SIP account password
-- `PHONE_NUMBER`: The GSM door opener's phone number. Can be:
+- `PHONE_NUMBER_<NAME>`: Multiple phone numbers for different targets. Can be:
   - Plain number: `+1234567890` (will be formatted as `sip:+1234567890@proxy`)
   - SIP URI: `sip:+1234567890@domain.com` (used as-is)
+  - Examples:
+    - `PHONE_NUMBER_DOOR=+1234567890`
+    - `PHONE_NUMBER_GATE=+0987654321`
+    - `PHONE_NUMBER_GARAGE=+1122334455`
 - `FLASK_PORT`: Port for the web interface (default: 5000)
 - `FLASK_DEBUG`: Enable Flask debug mode (default: False)
 
 **Note on Phone Number Format:**
-The application automatically formats plain phone numbers as SIP URIs using the format `sip:number@proxy-domain`. If your SIP provider requires a different format, you can specify the full SIP URI directly in the `PHONE_NUMBER` setting.
+The application automatically formats plain phone numbers as SIP URIs using the format `sip:number@proxy-domain`. If your SIP provider requires a different format, you can specify the full SIP URI directly in the phone number setting.
+
+**Adding New Targets:**
+Simply add a new `PHONE_NUMBER_<NAME>=<number>` line to your .env file and restart the application. The web interface will automatically create a button for the new target.
 
 ## Troubleshooting
 

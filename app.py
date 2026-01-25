@@ -23,14 +23,27 @@ app = Flask(__name__)
 SIP_PROXY = os.getenv('SIP_PROXY')
 SIP_USERNAME = os.getenv('SIP_USERNAME')
 SIP_PASSWORD = os.getenv('SIP_PASSWORD')
-PHONE_NUMBER = os.getenv('PHONE_NUMBER')
 FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
 FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
 
+# Parse multiple phone numbers from environment variables
+# Format: PHONE_NUMBER_<NAME>=<number>
+# Example: PHONE_NUMBER_DOOR=+1234567890, PHONE_NUMBER_GATE=+0987654321
+PHONE_NUMBERS = {}
+for key, value in os.environ.items():
+    if key.startswith('PHONE_NUMBER_'):
+        name = key.replace('PHONE_NUMBER_', '')
+        PHONE_NUMBERS[name] = value
+        logger.info(f"Loaded phone number: {name} -> {value}")
+
 # Validate configuration
-if not all([SIP_PROXY, SIP_USERNAME, SIP_PASSWORD, PHONE_NUMBER]):
+if not all([SIP_PROXY, SIP_USERNAME, SIP_PASSWORD]):
     logger.error("Missing required configuration. Please check your .env file.")
-    logger.error("Required: SIP_PROXY, SIP_USERNAME, SIP_PASSWORD, PHONE_NUMBER")
+    logger.error("Required: SIP_PROXY, SIP_USERNAME, SIP_PASSWORD")
+
+if not PHONE_NUMBERS:
+    logger.error("No phone numbers configured. Please add PHONE_NUMBER_<NAME> variables to .env")
+    logger.error("Example: PHONE_NUMBER_DOOR=+1234567890")
 
 # Initialize SIP client
 sip_client = None
@@ -61,7 +74,12 @@ def index():
 @app.route('/call', methods=['POST'])
 def make_call():
     """
-    Initiate a call to the configured phone number.
+    Initiate a call to the specified phone number.
+
+    Request JSON:
+        {
+            "target": "DOOR"  // Name of the target (e.g., DOOR, GATE)
+        }
 
     Returns:
         JSON response with success status and message
@@ -69,6 +87,25 @@ def make_call():
     global sip_client
 
     try:
+        # Get target from request
+        data = request.get_json()
+        target = data.get('target') if data else None
+
+        if not target:
+            return jsonify({
+                'success': False,
+                'message': 'No target specified'
+            }), 400
+
+        # Check if target exists
+        if target not in PHONE_NUMBERS:
+            return jsonify({
+                'success': False,
+                'message': f'Unknown target: {target}'
+            }), 400
+
+        phone_number = PHONE_NUMBERS[target]
+
         # Check if SIP client is initialized
         if not sip_client:
             logger.info("SIP client not initialized, attempting to initialize...")
@@ -79,7 +116,7 @@ def make_call():
                 }), 500
 
         # Make the call
-        result = sip_client.make_call(PHONE_NUMBER)
+        result = sip_client.make_call(phone_number)
 
         if result['success']:
             return jsonify(result), 200
@@ -117,6 +154,19 @@ def status():
             'has_active_call': False,
             'proxy': SIP_PROXY
         })
+
+
+@app.route('/targets', methods=['GET'])
+def get_targets():
+    """
+    Get the list of available call targets.
+
+    Returns:
+        JSON response with list of targets
+    """
+    return jsonify({
+        'targets': list(PHONE_NUMBERS.keys())
+    })
 
 
 @app.before_request
@@ -162,8 +212,10 @@ if __name__ == '__main__':
         logger.info("STARTING GSM DOOR OPENER")
         logger.info("=" * 60)
         logger.info(f"Flask port:   {FLASK_PORT}")
-        logger.info(f"Door opener:  {PHONE_NUMBER}")
         logger.info(f"SIP proxy:    {SIP_PROXY}")
+        logger.info(f"Configured targets: {len(PHONE_NUMBERS)}")
+        for name, number in PHONE_NUMBERS.items():
+            logger.info(f"  {name}: {number}")
         logger.info("=" * 60)
         logger.info("Press Ctrl+C to stop")
         logger.info("")
