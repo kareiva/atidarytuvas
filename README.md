@@ -112,8 +112,6 @@ Simply add a new `PHONE_NUMBER_<NAME>=<number>` line to your .env file and resta
 ## Security Notes
 
 - Never commit your `.env` file to version control
-- Keep your SIP credentials secure
-- Use HTTPS in production environments
 - Consider implementing authentication for the web interface in production
 
 ## License
