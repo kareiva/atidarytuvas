@@ -1,0 +1,42 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+README.md
+*.md
+
+# Test files (if any)
+test_*.py
+*_test.py
+tests/
+
+# Claude session data
+.claude/
+
+# Other unnecessary files
+.DS_Store
+Thumbs.db
