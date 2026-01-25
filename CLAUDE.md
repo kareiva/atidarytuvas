@@ -176,13 +176,24 @@ The application has careful signal handling for clean shutdown (app.py:139-157):
 
 **Never modify the shutdown sequence without testing thoroughly.**
 
-### Thread Safety
+### Thread Safety and Auto-Hangup Mechanism
 
-SIP call state is protected by `self.call_lock` (threading.Lock) in sip_client.py:132. This lock protects:
+SIP call state is protected by `self.call_lock` (threading.Lock) in sip_client.py. This lock protects:
 - `self.current_call` (prevents concurrent calls)
 - `self.hangup_timer` (prevents race conditions)
 
 **Always acquire the lock before checking or modifying call state.**
+
+**Auto-hangup implementation:**
+PJSIP requires that all PJSIP functions be called from threads registered with PJSIP. External Python threads (like `threading.Timer`) are not registered and will cause crashes if they call PJSIP functions directly.
+
+Solution: Queue-based callback processing
+1. When call is answered, start a 10-second `threading.Timer`
+2. Timer callback posts "HANGUP" message to queue (doesn't call PJSIP)
+3. PJSIP callbacks (`onCallState`, `onCallMediaState`, `onRegState`) check queue at start
+4. When "HANGUP" found in queue, callback (running in PJSIP thread) safely calls `hangup()`
+
+This ensures all PJSIP functions are called from PJSIP threads, avoiding the "external thread" assertion error.
 
 ### Logging System
 
@@ -274,6 +285,9 @@ To add a new target (e.g., GARAGE, LOBBY):
 - Extend `SIPCall` or `SIPAccount` classes in sip_client.py
 - Use PJSUA2 callback methods (e.g., `onCallState`, `onRegState`)
 - Always handle exceptions in callbacks (PJSIP can crash if callbacks throw)
+- **CRITICAL**: Never call PJSIP functions from external threads (e.g., `threading.Timer` callbacks)
+  - If you need delayed operations, use the queue pattern: post to queue from timer, process from callback
+  - See `_post_hangup_request()` and `_process_hangup_queue()` for reference implementation
 - See PJSIP documentation: https://docs.pjsip.org/en/latest/api/pjsua2.html
 
 ### Modifying Flask endpoints
