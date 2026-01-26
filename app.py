@@ -61,7 +61,7 @@ def init_sip_client():
         sip_client = SIPClient(SIP_PROXY, SIP_USERNAME, SIP_PASSWORD, sip_logger)
         success = sip_client.start()
         if success:
-            logger.essential("SIP client initialized successfully")
+            logger.info("SIP client initialized successfully")
         else:
             logger.error("Failed to initialize SIP client")
         return success
@@ -113,7 +113,7 @@ def make_call():
 
         # Check if SIP client is initialized
         if not sip_client:
-            logger.essential("SIP client not initialized, attempting to initialize...")
+            logger.info("SIP client not initialized, attempting to initialize...")
             if not init_sip_client():
                 return jsonify({
                     'success': False,
@@ -186,19 +186,17 @@ def shutdown_handler():
     """Clean up resources on shutdown."""
     global sip_client
     if sip_client:
-        logger.essential("Shutting down SIP client...")
+        logger.info("Shutting down SIP client...")
         sip_client.stop()
         sip_client = None
 
 
 def signal_handler(sig, frame):
     """Handle SIGINT (Ctrl+C) signal."""
-    logger.critical("")
-    logger.critical("=" * 60)
-    logger.critical("Received shutdown signal (Ctrl+C)")
-    logger.critical("=" * 60)
+    logger.info("")
+    logger.info("Received shutdown signal (Ctrl+C)")
     shutdown_handler()
-    logger.critical("Shutdown complete. Exiting...")
+    logger.info("Shutdown complete. Exiting...")
     sys.exit(0)
 
 
@@ -212,19 +210,16 @@ if __name__ == '__main__':
     atexit.register(shutdown_handler)
 
     try:
-        logger.critical("")
-        logger.critical("=" * 60)
-        logger.critical("STARTING GSM DOOR OPENER")
-        logger.critical("=" * 60)
-        logger.essential(f"Flask port:   {FLASK_PORT}")
-        logger.essential(f"SIP proxy:    {SIP_PROXY}")
-        logger.essential(f"Log level:    {LOG_LEVEL if LOG_LEVEL else 'CRITICAL'}")
-        logger.essential(f"Configured targets: {len(PHONE_NUMBERS)}")
+        logger.info("")
+        logger.info("Starting GSM Door Opener")
+        logger.info(f"Flask port: {FLASK_PORT}")
+        logger.info(f"SIP proxy: {SIP_PROXY}")
+        logger.info(f"Log level: {LOG_LEVEL if LOG_LEVEL else 'ERROR'}")
+        logger.info(f"Configured targets: {len(PHONE_NUMBERS)}")
         for name, number in PHONE_NUMBERS.items():
-            logger.essential(f"  {name}: {number}")
-        logger.critical("=" * 60)
-        logger.essential("Press Ctrl+C to stop")
-        logger.critical("")
+            logger.info(f"  {name}: {number}")
+        logger.info("Press Ctrl+C to stop")
+        logger.info("")
 
         # Run Flask in single-threaded mode to avoid PJSIP threading issues
         # PJSIP requires thread registration - single-threaded is simpler for this use case

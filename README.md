@@ -97,11 +97,9 @@ The application will start on `http://localhost:5000` (or the port specified in 
     - `PHONE_NUMBER_GARAGE=+1122334455`
 - `FLASK_PORT`: Port for the web interface (default: 5000)
 - `FLASK_DEBUG`: Enable Flask debug mode (default: False)
-- `LOG_LEVEL`: Logging verbosity (default: CRITICAL if not set)
-  - Not set or `CRITICAL`: Minimal output - startup/shutdown/errors only
-  - `LOW`: Essential events (registration, calls, errors)
-  - `MEDIUM`: Include SIP response codes and state changes
-  - `HIGH`: Full debug output with all SIP protocol details
+- `LOG_LEVEL`: Logging verbosity (default: ERROR if not set)
+  - Not set or `ERROR`: Errors only (minimal output)
+  - `INFO`: Errors + informational messages (SIP events, registration, calls)
 
 **Note on Phone Number Format:**
 The application automatically formats plain phone numbers as SIP URIs using the format `sip:number@proxy-domain`. If your SIP provider requires a different format, you can specify the full SIP URI directly in the phone number setting.

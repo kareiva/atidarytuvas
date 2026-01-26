@@ -47,7 +47,7 @@ Environment variables (`.env` file):
   - Plain: `+1234567890` → `sip:+1234567890@proxy`
   - Full URI: `sip:+1234567890@domain.com` (used as-is)
 - **FLASK_PORT**: Default 5000
-- **LOG_LEVEL**: CRITICAL (default), LOW, MEDIUM, HIGH
+- **LOG_LEVEL**: ERROR (default), INFO
 
 ## Development
 
@@ -82,13 +82,11 @@ See `_post_hangup_request()` and `_process_hangup_queue()` in sip_client.py.
 
 ### Logging
 
-AppLogger class with verbosity levels:
-- `critical()` - Always shown
-- `essential()` - LOW+
-- `info()` - MEDIUM+
-- `debug()` - HIGH only
+AppLogger class with two verbosity levels:
+- `error()` - Always shown
+- `info()` - INFO level only
 
-Default is CRITICAL (minimal output). Use `essential()` for most logging.
+Default is ERROR (errors only). Set LOG_LEVEL=INFO for verbose output.
 
 ## Code Modification Guidelines
 
@@ -112,8 +110,9 @@ Add `PHONE_NUMBER_<NAME>=+number` to .env → Restart → UI auto-generates butt
 ### Adding logging
 
 - Use AppLogger methods, not standard `logging`
-- Example: `self.logger.call_event("msg")` not `logger.info("msg")`
-- Default CRITICAL level means most logs need `essential()` or higher
+- `logger.error()` for errors (always shown)
+- `logger.info()` for informational messages (INFO level only)
+- Example: `self.logger.info("Call initiated")` not `logger.info("Call initiated")`
 
 ## Security
 
