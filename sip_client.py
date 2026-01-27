@@ -290,7 +290,7 @@ class SIPClient:
         except Exception as e:
             self.logger.error(f"✗ Failed to make call: {e}")
             import traceback
-            self.logger.debug(traceback.format_exc())
+            self.logger.info(traceback.format_exc())
             return {
                 'success': False,
                 'message': f'Failed to make call: {str(e)}'
