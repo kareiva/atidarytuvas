@@ -188,6 +188,8 @@ class SIPClient:
             # Start the library
             self.endpoint.libStart()
 
+            self.endpoint.audDevManager().setNullDev()
+            
             self.logger.sip_request("REGISTER (sending to proxy)")
 
             # Create account configuration
