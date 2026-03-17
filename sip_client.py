@@ -72,10 +72,6 @@ class SIPCall(pj.Call):
         elif state == pj.PJSIP_INV_STATE_CONFIRMED:
             self.logger.sip_response(200, "OK - Call answered")
 
-            # Schedule auto-hangup after 10 seconds
-            if self.sip_client:
-                self.sip_client._schedule_hangup()
-
         elif state == pj.PJSIP_INV_STATE_DISCONNECTED:
             if last_status >= 400:
                 self.logger.error(f"Call failed: {last_status} {last_reason}")
@@ -93,7 +89,8 @@ class SIPCall(pj.Call):
 class SIPClient:
     """SIP client using PJSUA2 library."""
 
-    def __init__(self, proxy, username, password, app_logger: AppLogger = None):
+    def __init__(self, proxy, username, password, app_logger: AppLogger = None,
+                 hangup_timeout: int = 10):
         """
         Initialize the SIP client.
 
@@ -102,11 +99,13 @@ class SIPClient:
             username: SIP username
             password: SIP password
             app_logger: AppLogger instance for logging
+            hangup_timeout: Seconds after answer before auto-hangup
         """
         self.proxy = proxy
         self.username = username
         self.password = password
         self.logger = app_logger
+        self.hangup_timeout = hangup_timeout
         self.endpoint = None
         self.account = None
         self.current_call = None
@@ -237,10 +236,13 @@ class SIPClient:
 
             with self.call_lock:
                 self.current_call = call
+                self.hangup_timer = threading.Timer(self.hangup_timeout, self._post_hangup_request)
+                self.hangup_timer.start()
+                self.logger.info(f"Auto-hangup timer started ({self.hangup_timeout} seconds)")
 
             return {
                 'success': True,
-                'message': 'Call initiated. Will hang up 10 seconds after answer.'
+                'message': f'Call initiated. Will hang up in {self.hangup_timeout} seconds.'
             }
 
         except Exception as e:
@@ -251,18 +253,6 @@ class SIPClient:
                 'success': False,
                 'message': f'Failed to make call: {str(e)}'
             }
-
-    def _schedule_hangup(self):
-        """Schedule automatic hangup 10 seconds after call is answered."""
-        try:
-            with self.call_lock:
-                if self.hangup_timer:
-                    self.hangup_timer.cancel()
-                self.hangup_timer = threading.Timer(10.0, self._post_hangup_request)
-                self.hangup_timer.start()
-                self.logger.info("Auto-hangup timer started (10 seconds)")
-        except Exception as e:
-            self.logger.error(f"Error scheduling hangup: {e}")
 
     def _clear_call(self):
         """Cancel timer and clear current call reference atomically."""
