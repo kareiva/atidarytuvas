@@ -48,6 +48,7 @@ Environment variables (`.env` file):
   - Full URI: `sip:+1234567890@domain.com` (used as-is)
 - **FLASK_PORT**: Default 5000
 - **LOG_LEVEL**: ERROR (default), INFO
+- **HANGUP_TIMEOUT**: Seconds after answer before auto-hangup. Default 10. Must be a positive integer.
 
 ## Development
 

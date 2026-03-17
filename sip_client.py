@@ -1,6 +1,5 @@
 import threading
 import time
-import queue
 from logger import AppLogger
 
 try:
@@ -29,10 +28,6 @@ class SIPAccount(pj.Account):
 
     def onRegState(self, prm):
         """Called when registration state changes."""
-        # Process any pending hangup requests from queue
-        if self.sip_client:
-            self.sip_client._process_hangup_queue()
-
         ai = self.getInfo()
         status_code = ai.regStatus
         reason = prm.reason
@@ -50,11 +45,6 @@ class SIPCall(pj.Call):
 
     def onCallState(self, prm):
         """Called when call state changes."""
-        # Process any pending hangup requests from queue
-        # This callback runs in PJSIP thread, so it's safe to call PJSIP functions
-        if self.sip_client:
-            self.sip_client._process_hangup_queue()
-
         ci = self.getInfo()
         state = ci.state
         state_text = ci.stateText
@@ -82,36 +72,25 @@ class SIPCall(pj.Call):
         elif state == pj.PJSIP_INV_STATE_CONFIRMED:
             self.logger.sip_response(200, "OK - Call answered")
 
-            # Schedule auto-hangup after 10 seconds
-            if self.sip_client:
-                self.sip_client._schedule_hangup()
-
         elif state == pj.PJSIP_INV_STATE_DISCONNECTED:
             if last_status >= 400:
                 self.logger.error(f"Call failed: {last_status} {last_reason}")
             else:
                 self.logger.call_event("Call ended")
 
-            # Cancel hangup timer if call ends
             if self.sip_client:
-                self.sip_client._cancel_hangup_timer()
-                self.sip_client.current_call = None
+                self.sip_client._clear_call()
 
     def onCallMediaState(self, prm):
         """Called when media state changes."""
-        # Process any pending hangup requests from queue
-        if self.sip_client:
-            self.sip_client._process_hangup_queue()
-
-        ci = self.getInfo()
-        # For door opener, we don't need actual audio, just signaling
         pass
 
 
 class SIPClient:
     """SIP client using PJSUA2 library."""
 
-    def __init__(self, proxy, username, password, app_logger: AppLogger = None):
+    def __init__(self, proxy, username, password, app_logger: AppLogger = None,
+                 hangup_timeout: int = 10):
         """
         Initialize the SIP client.
 
@@ -120,44 +99,18 @@ class SIPClient:
             username: SIP username
             password: SIP password
             app_logger: AppLogger instance for logging
+            hangup_timeout: Seconds after answer before auto-hangup
         """
         self.proxy = proxy
         self.username = username
         self.password = password
         self.logger = app_logger
+        self.hangup_timeout = hangup_timeout
         self.endpoint = None
         self.account = None
         self.current_call = None
         self.hangup_timer = None
         self.call_lock = threading.Lock()
-        self.hangup_queue = queue.Queue()
-
-    def _process_hangup_queue(self):
-        """Process pending hangup requests from queue (called from PJSIP thread)."""
-        try:
-            # Process all pending hangup requests
-            while not self.hangup_queue.empty():
-                try:
-                    hangup_request = self.hangup_queue.get_nowait()
-
-                    if hangup_request == "HANGUP":
-                        self.logger.call_event("Auto-hangup: 10 seconds elapsed")
-
-                        with self.call_lock:
-                            if self.current_call:
-                                self.logger.sip_request("BYE (terminating call)")
-                                try:
-                                    # Hangup the call - safe because we're in PJSIP callback
-                                    prm = pj.CallOpParam()
-                                    self.current_call.hangup(prm)
-                                except Exception as e:
-                                    self.logger.error(f"Error in hangup: {e}")
-                                self.current_call = None
-
-                except queue.Empty:
-                    break
-        except Exception as e:
-            self.logger.error(f"Error processing hangup queue: {e}")
 
     def start(self):
         """Start the SIP client and register with the server."""
@@ -283,10 +236,13 @@ class SIPClient:
 
             with self.call_lock:
                 self.current_call = call
+                self.hangup_timer = threading.Timer(self.hangup_timeout, self._post_hangup_request)
+                self.hangup_timer.start()
+                self.logger.info(f"Auto-hangup timer started ({self.hangup_timeout} seconds)")
 
             return {
                 'success': True,
-                'message': 'Call initiated. Will hang up 10 seconds after answer.'
+                'message': f'Call initiated. Will hang up in {self.hangup_timeout} seconds.'
             }
 
         except Exception as e:
@@ -298,38 +254,40 @@ class SIPClient:
                 'message': f'Failed to make call: {str(e)}'
             }
 
-    def _schedule_hangup(self):
-        """Schedule automatic hangup 10 seconds after call is answered."""
-        try:
-            with self.call_lock:
-                if self.hangup_timer:
-                    self.hangup_timer.cancel()
-
-                # Use timer to post to queue instead of calling PJSIP directly
-                self.hangup_timer = threading.Timer(10.0, self._post_hangup_request)
-                self.hangup_timer.start()
-                self.logger.info("Auto-hangup timer started (10 seconds)")
-        except Exception as e:
-            self.logger.error(f"Error scheduling hangup: {e}")
-
-    def _cancel_hangup_timer(self):
-        """Cancel the hangup timer."""
-        try:
-            with self.call_lock:
-                if self.hangup_timer:
-                    self.hangup_timer.cancel()
-                    self.hangup_timer = None
-        except Exception as e:
-            self.logger.error(f"✗ Error cancelling timer: {e}")
+    def _clear_call(self):
+        """Cancel timer and clear current call reference atomically."""
+        with self.call_lock:
+            if self.hangup_timer:
+                self.hangup_timer.cancel()
+                self.hangup_timer = None
+            self.current_call = None
 
     def _post_hangup_request(self):
-        """Post hangup request to queue (called from timer thread)."""
+        """Called from timer thread — register with PJSIP and hangup directly."""
         try:
-            # This runs in timer thread - DON'T call PJSIP functions here
-            # Just post to queue for worker thread to process
-            self.hangup_queue.put("HANGUP")
+            ep = pj.Endpoint.instance()
+            try:
+                ep.libRegisterThread("hangup_timer")
+            except Exception:
+                pass
         except Exception as e:
-            self.logger.error(f"✗ Error posting hangup request: {e}")
+            self.logger.error(f"Error in auto-hangup setup: {e}")
+
+        self.logger.call_event("Auto-hangup: 10 seconds elapsed")
+        with self.call_lock:
+            call = self.current_call
+            self.current_call = None
+            self.hangup_timer = None
+
+        if call:
+            try:
+                ci = call.getInfo()
+                if ci.state != pj.PJSIP_INV_STATE_DISCONNECTED:
+                    self.logger.sip_request("BYE (auto-hangup)")
+                    prm = pj.CallOpParam()
+                    call.hangup(prm)
+            except Exception as e:
+                self.logger.error(f"Error hanging up call: {e}")
 
     def stop(self):
         """Stop the SIP client."""

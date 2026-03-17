@@ -29,6 +29,15 @@ SIP_PASSWORD = os.getenv('SIP_PASSWORD')
 FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
 FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
 
+_raw_timeout = os.getenv('HANGUP_TIMEOUT', '10')
+try:
+    HANGUP_TIMEOUT = int(_raw_timeout)
+    if HANGUP_TIMEOUT <= 0:
+        raise ValueError
+except ValueError:
+    logger.error(f"Invalid HANGUP_TIMEOUT '{_raw_timeout}', using default 10")
+    HANGUP_TIMEOUT = 10
+
 # Parse multiple phone numbers from environment variables
 # Format: PHONE_NUMBER_<NAME>=<number>
 # Example: PHONE_NUMBER_DOOR=+1234567890, PHONE_NUMBER_GATE=+0987654321
@@ -58,7 +67,8 @@ def init_sip_client():
     try:
         # Create a separate logger for SIP client
         sip_logger = create_logger('sip_client', LOG_LEVEL)
-        sip_client = SIPClient(SIP_PROXY, SIP_USERNAME, SIP_PASSWORD, sip_logger)
+        sip_client = SIPClient(SIP_PROXY, SIP_USERNAME, SIP_PASSWORD, sip_logger,
+                               hangup_timeout=HANGUP_TIMEOUT)
         success = sip_client.start()
         if success:
             logger.info("SIP client initialized successfully")
