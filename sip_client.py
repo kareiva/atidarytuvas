@@ -1,3 +1,4 @@
+import socket
 import threading
 import time
 from logger import AppLogger
@@ -112,6 +113,15 @@ class SIPClient:
         self.hangup_timer = None
         self.call_lock = threading.Lock()
 
+    def _resolve_proxy(self, proxy):
+        host, sep, port = proxy.partition(':')
+        try:
+            ip = socket.gethostbyname(host)
+        except socket.gaierror as e:
+            self.logger.error(f"Could not resolve SIP proxy '{host}': {e}. Using unresolved value.")
+            return proxy
+        return f"{ip}{sep}{port}" if sep else ip
+
     def start(self):
         """Start the SIP client and register with the server."""
         try:
@@ -119,6 +129,9 @@ class SIPClient:
             self.logger.info("Initializing SIP client")
             self.logger.info(f"Proxy: {self.proxy}")
             self.logger.info(f"Username: {self.username}")
+
+            self.proxy = self._resolve_proxy(self.proxy)
+            self.logger.info(f"Resolved proxy address: {self.proxy}")
 
             # Create and initialize endpoint
             ep_cfg = pj.EpConfig()
