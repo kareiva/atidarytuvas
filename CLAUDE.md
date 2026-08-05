@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GSM Door Opener - Flask web application using SIP/VoIP to trigger multiple GSM door opener devices. Web interface displays buttons for each configured target (DOOR, GATE, GARAGE). Clicking a button makes a SIP call that unlocks the device. Calls auto-hangup after 10 seconds.
+GSM Door Opener - Flask web application using SIP/VoIP to trigger multiple GSM door opener devices. Web interface displays buttons for each configured target (DOOR, GATE, GARAGE). Clicking a button makes a SIP call that unlocks the device. Calls auto-hangup after a configurable timeout (default 10s).
 
 ## Critical Architecture
 
@@ -28,7 +28,9 @@ Flask (app.py) → AppLogger (logger.py) → SIP Client (sip_client.py)
 
 1. GET /targets → Fetch configured targets
 2. POST /call `{"target": "DOOR"}` → Initiate call
-3. INVITE → 100 Trying → 180 Ringing → 200 OK → 10s timer → BYE
+3. INVITE → 100 Trying → 180 Ringing → 200 OK → HANGUP_TIMEOUT timer → BYE
+
+Note: `make_call` starts the auto-hangup timer as soon as the INVITE is sent (not on answer), so the call is torn down `HANGUP_TIMEOUT` seconds after dialing regardless of whether it is answered.
 
 ### API Endpoints
 
@@ -47,8 +49,9 @@ Environment variables (`.env` file):
   - Plain: `+1234567890` → `sip:+1234567890@proxy`
   - Full URI: `sip:+1234567890@domain.com` (used as-is)
 - **FLASK_PORT**: Default 5000
+- **FLASK_DEBUG**: `true`/`false`, default false
 - **LOG_LEVEL**: ERROR (default), INFO
-- **HANGUP_TIMEOUT**: Seconds after answer before auto-hangup. Default 10. Must be a positive integer.
+- **HANGUP_TIMEOUT**: Seconds after dialing before auto-hangup. Default 10. Non-positive/invalid values fall back to 10.
 
 ## Development
 
@@ -72,14 +75,17 @@ podman run -d -p 5000:5000 -v $(pwd)/.env:/app/.env:ro gsm-door-opener
 
 **PJSIP Threading Requirement**: All PJSIP functions must be called from PJSIP-registered threads.
 
-**Queue-based hangup mechanism:**
-1. Call answered → Start 10s `threading.Timer`
-2. Timer fires → Posts "HANGUP" to queue (no PJSIP calls)
-3. PJSIP callback fires → Processes queue, calls `hangup()` safely
+**Auto-hangup mechanism** (see `_post_hangup_request()` in sip_client.py):
+1. `make_call` sends INVITE → starts a `threading.Timer(hangup_timeout, _post_hangup_request)`
+2. Timer fires on its own thread → `_post_hangup_request` registers that thread with PJSIP via `pj.Endpoint.instance().libRegisterThread(...)`, then calls `call.hangup()` directly (guarded by a state check that it isn't already `DISCONNECTED`)
 
-See `_post_hangup_request()` and `_process_hangup_queue()` in sip_client.py.
+The timer thread calls PJSIP directly — it is safe *because* it registers itself first. This is the required pattern for any code that touches PJSIP off the main/callback threads; do not call PJSIP from an unregistered thread.
 
-**Lock protection:** `self.call_lock` protects `current_call` and `hangup_timer`. Always acquire before modifying.
+**Call teardown paths, both cancel the timer under the lock:**
+- Normal/failed disconnect → `SIPCall.onCallState` (DISCONNECTED) → `_clear_call()`
+- Timeout → `_post_hangup_request()`
+
+**Lock protection:** `self.call_lock` protects `current_call` and `hangup_timer`. Always acquire before reading/modifying either.
 
 ### Logging
 
@@ -99,13 +105,14 @@ Add `PHONE_NUMBER_<NAME>=+number` to .env → Restart → UI auto-generates butt
 
 - Extend `SIPCall` or `SIPAccount` in sip_client.py
 - Use PJSUA2 callbacks (`onCallState`, `onRegState`)
-- **NEVER call PJSIP from external threads** - use queue pattern
+- **NEVER call PJSIP from an unregistered thread** — call `libRegisterThread()` first (see `_post_hangup_request`)
+- Audio is disabled: `audDevManager().setNullDev()` is called at startup so no sound card is needed (door openers only need the call to connect, not media)
 - Handle exceptions (PJSIP crashes on unhandled exceptions)
 
 ### Modifying Flask endpoints
 
 - Keep single-threaded (PJSIP constraint)
-- Use global `sip_client` instance
+- Use global `sip_client` instance — it is lazily created on the first request via `@app.before_request` (and re-attempted inside `/call` if still `None`), not at import time
 - Return `{"success": bool, "message": str}`
 
 ### Adding logging
