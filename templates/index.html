@@ -174,11 +174,15 @@
                     statusMessage.textContent = `Opening ${label}… (ringing)`;
                     statusMessage.className = 'status-message info';
                     pollOutcome(target, label, button, originalText, Date.now() / 1000);
+                } else if (data.busy) {
+                    // Another call is active (single call at a time) — not a failure.
+                    statusMessage.textContent = 'Busy — another call in progress, try again';
+                    statusMessage.className = 'status-message info';
+                    finishCall(button, originalText);
                 } else {
                     statusMessage.textContent = 'Error: ' + data.message;
                     statusMessage.className = 'status-message error';
-                    callButtons.forEach(btn => btn.disabled = false);
-                    button.textContent = originalText;
+                    finishCall(button, originalText);
                     // Re-check status in case registration was lost
                     checkStatus();
                 }
