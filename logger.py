@@ -100,7 +100,13 @@ def create_logger(name: str, level_str: str = "") -> AppLogger:
     """
     level_map = {
         "ERROR": LogLevel.ERROR,
-        "INFO": LogLevel.INFO
+        "INFO": LogLevel.INFO,
+        # DEBUG/HIGH are treated as the most verbose app level (INFO) so a
+        # LOG_LEVEL=DEBUG in the environment is honoured instead of silently
+        # falling back to ERROR. PJSIP's own verbosity is set separately via
+        # $PJSIP_LOG_LEVEL in sip_client.py.
+        "DEBUG": LogLevel.INFO,
+        "HIGH": LogLevel.INFO,
     }
 
     # Default to ERROR if empty or invalid

@@ -20,6 +20,62 @@ except ImportError:
 logger = None
 
 
+class CallMetrics:
+    """Thread-safe in-process metrics for the Prometheus /metrics endpoint.
+
+    Everything is labelled by `target` (DOOR/GATE/LAB) so a broken target is
+    distinguishable from a working one. `result` is the call outcome:
+      ringing   - got a provisional (100/180/183): the far end was reached
+      answered  - call was answered (200/CONFIRMED)
+      cancelled - we hung up after the ring window (normal for ring-and-open)
+      rejected  - provider/callee ended it with a 4xx/5xx/6xx we did NOT cause
+      error     - local error making the call
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.attempts = {}          # target -> count
+        self.results = {}           # (target, result) -> count
+        self.last_status = {}       # target -> last SIP status code
+        self.last_reason = {}       # target -> last SIP reason text
+        self.last_ts = {}           # target -> epoch of last attempt
+        self.last_ring_seconds = {}     # target -> seconds INVITE->first provisional
+        self.last_duration_seconds = {}  # target -> seconds INVITE->disconnect
+        self.last_reached = {}      # target -> 1 if a provisional/answer was seen, else 0
+
+    def record_attempt(self, target):
+        with self.lock:
+            self.attempts[target] = self.attempts.get(target, 0) + 1
+            self.last_ts[target] = time.time()
+            self.last_reached[target] = 0
+
+    def record_result(self, target, result, status=None, reason=None,
+                      ring_seconds=None, duration_seconds=None, reached=None):
+        with self.lock:
+            self.results[(target, result)] = self.results.get((target, result), 0) + 1
+            if status is not None:
+                self.last_status[target] = status
+            if reason is not None:
+                self.last_reason[target] = reason
+            if ring_seconds is not None:
+                self.last_ring_seconds[target] = ring_seconds
+            if duration_seconds is not None:
+                self.last_duration_seconds[target] = duration_seconds
+            if reached is not None:
+                self.last_reached[target] = 1 if reached else 0
+
+    def mark_reached(self, target, ring_seconds):
+        with self.lock:
+            if self.last_reached.get(target) != 1:
+                self.last_reached[target] = 1
+                self.last_ring_seconds[target] = ring_seconds
+
+
+def _esc(v):
+    """Escape a Prometheus label value."""
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
 class SIPAccount(pj.Account):
     """Custom Account class to handle registration callbacks."""
 
@@ -33,34 +89,59 @@ class SIPAccount(pj.Account):
         ai = self.getInfo()
         status_code = ai.regStatus
         reason = prm.reason
-
         self.logger.registration_event(status_code, reason)
+
+
+# Readable names for the PJSIP INVITE session states.
+def _state_name(pj_mod, state):
+    for n in ("PJSIP_INV_STATE_NULL", "PJSIP_INV_STATE_CALLING",
+              "PJSIP_INV_STATE_INCOMING", "PJSIP_INV_STATE_EARLY",
+              "PJSIP_INV_STATE_CONNECTING", "PJSIP_INV_STATE_CONFIRMED",
+              "PJSIP_INV_STATE_DISCONNECTED"):
+        if getattr(pj_mod, n, None) == state:
+            return n.replace("PJSIP_INV_STATE_", "")
+    return str(state)
 
 
 class SIPCall(pj.Call):
     """Custom Call class to handle call state callbacks."""
 
-    def __init__(self, account, sip_client=None, app_logger: AppLogger = None):
+    def __init__(self, account, sip_client=None, app_logger: AppLogger = None,
+                 target="?", metrics=None, t0=None):
         pj.Call.__init__(self, account)
         self.sip_client = sip_client
         self.logger = app_logger
+        self.target = target
+        self.metrics = metrics
+        self.t0 = t0 or time.time()
+        self.reached = False      # saw a provisional or answer
+        self.answered = False
+        self.final_recorded = False
+
+    def _elapsed(self):
+        return time.time() - self.t0
 
     def onCallState(self, prm):
-        """Called when call state changes."""
+        """Called when call state changes. Logs EVERY transition with the
+        actual SIP status code, reason and elapsed time since INVITE."""
         ci = self.getInfo()
         state = ci.state
         state_text = ci.stateText
         last_status = ci.lastStatusCode
         last_reason = ci.lastReason
+        elapsed = self._elapsed()
 
-        # Map PJSIP states to readable messages
-        if state == pj.PJSIP_INV_STATE_CALLING:
-            pass  # Initial state, no logging needed
+        self.logger.call_event(
+            "[{0}] state={1} sip={2} {3} (+{4:.1f}s)".format(
+                self.target, _state_name(pj, state), last_status,
+                last_reason, elapsed))
 
-        elif state == pj.PJSIP_INV_STATE_INCOMING:
-            self.logger.info("Incoming call")
-
-        elif state == pj.PJSIP_INV_STATE_EARLY:
+        if state == pj.PJSIP_INV_STATE_EARLY:
+            # First provisional response => the far end was actually reached.
+            if not self.reached:
+                self.reached = True
+                if self.metrics:
+                    self.metrics.mark_reached(self.target, elapsed)
             if last_status == 100:
                 self.logger.sip_response(100, "Trying")
             elif last_status == 180:
@@ -68,20 +149,53 @@ class SIPCall(pj.Call):
             elif last_status == 183:
                 self.logger.sip_response(183, "Session Progress")
 
-        elif state == pj.PJSIP_INV_STATE_CONNECTING:
-            self.logger.info("Call connecting")
-
         elif state == pj.PJSIP_INV_STATE_CONFIRMED:
+            self.answered = True
+            self.reached = True
             self.logger.sip_response(200, "OK - Call answered")
 
         elif state == pj.PJSIP_INV_STATE_DISCONNECTED:
-            if last_status >= 400:
-                self.logger.error(f"Call failed: {last_status} {last_reason}")
-            else:
-                self.logger.call_event("Call ended")
-
+            self._record_final(last_status, last_reason, elapsed)
             if self.sip_client:
                 self.sip_client._clear_call()
+
+    def _record_final(self, last_status, last_reason, elapsed):
+        if self.final_recorded:
+            return
+        self.final_recorded = True
+
+        # Did WE end it? (auto-hangup after the ring window, or app shutdown)
+        we_hung_up = bool(self.sip_client and getattr(self.sip_client, "_last_hangup_by_us", False))
+
+        if self.answered:
+            result = "answered"
+        elif we_hung_up and last_status in (0, 200, 487):
+            # Our CANCEL/BYE after the ring window (487 Request Terminated is the
+            # expected response to a CANCEL). This is the normal ring-and-open path.
+            result = "cancelled"
+        elif last_status >= 400:
+            # Provider/callee ended it and it was NOT our cancel.
+            result = "rejected"
+        else:
+            result = "ended"
+
+        if result == "rejected":
+            self.logger.error(
+                "[{0}] Call FAILED: {1} {2} (reached={3}, +{4:.1f}s) — provider/callee ended it".format(
+                    self.target, last_status, last_reason, self.reached, elapsed))
+        elif result == "cancelled":
+            self.logger.call_event(
+                "[{0}] Call cancelled by us after {1:.1f}s (reached={2}, last sip={3}) — normal ring-and-open".format(
+                    self.target, elapsed, self.reached, last_status))
+        else:
+            self.logger.call_event(
+                "[{0}] Call {1}: {2} {3} (+{4:.1f}s)".format(
+                    self.target, result, last_status, last_reason, elapsed))
+
+        if self.metrics:
+            self.metrics.record_result(
+                self.target, result, status=last_status, reason=last_reason,
+                duration_seconds=elapsed, reached=self.reached)
 
     def onCallMediaState(self, prm):
         """Called when media state changes."""
@@ -93,16 +207,6 @@ class SIPClient:
 
     def __init__(self, proxy, username, password, app_logger: AppLogger = None,
                  hangup_timeout: int = 10):
-        """
-        Initialize the SIP client.
-
-        Args:
-            proxy: SIP proxy server address (e.g., 'sips.peoplefone.lt:5060')
-            username: SIP username
-            password: SIP password
-            app_logger: AppLogger instance for logging
-            hangup_timeout: Seconds after answer before auto-hangup
-        """
         self.proxy = proxy
         self.username = username
         self.password = password
@@ -113,6 +217,11 @@ class SIPClient:
         self.current_call = None
         self.hangup_timer = None
         self.call_lock = threading.Lock()
+        self.metrics = CallMetrics()
+        self._last_hangup_by_us = False
+        # PJSIP log verbosity: 0=silent .. 5=very verbose. Level >=4 prints full
+        # SIP messages (INVITE/180/183/486/603/CANCEL/BYE) to stdout -> journal.
+        self.pjsip_log_level = int(os.getenv("PJSIP_LOG_LEVEL", "4"))
 
     def _resolve_proxy(self, proxy):
         host, sep, port = proxy.partition(':')
@@ -147,11 +256,15 @@ class SIPClient:
             self.endpoint = pj.Endpoint()
             self.endpoint.libCreate()
 
-            # Configure logging (suppress PJSIP verbose logs)
+            # PJSIP logging: level controls what is written; consoleLevel controls
+            # what reaches stdout. >=4 shows full SIP message traces (so provider
+            # responses like 486/603/408 are visible per call). Configurable via
+            # $PJSIP_LOG_LEVEL.
             log_cfg = pj.LogConfig()
-            log_cfg.level = 3  # Show only warnings and errors from PJSIP
-            log_cfg.consoleLevel = 0  # Don't output to console
+            log_cfg.level = self.pjsip_log_level
+            log_cfg.consoleLevel = self.pjsip_log_level
             ep_cfg.logConfig = log_cfg
+            self.logger.info(f"PJSIP log level: {self.pjsip_log_level}")
 
             self.endpoint.libInit(ep_cfg)
 
@@ -195,18 +308,14 @@ class SIPClient:
             acc_cfg.idUri = f"sip:{self.username}@{self.proxy}"
             acc_cfg.regConfig.registrarUri = f"sip:{self.proxy}"
 
-            # Add credentials
             cred = pj.AuthCredInfo("digest", "*", self.username, 0, self.password)
             acc_cfg.sipConfig.authCreds.append(cred)
 
-            # Create the account
             self.account = SIPAccount(self.logger, self)
             self.account.create(acc_cfg)
 
-            # Wait briefly for registration
             time.sleep(2)
 
-            # Check registration status
             ai = self.account.getInfo()
             if ai.regStatus == 200:
                 self.logger.info("SIP client ready")
@@ -220,7 +329,6 @@ class SIPClient:
             return False
 
     def is_registered(self):
-        """Check if the SIP client is registered with the server."""
         try:
             if not self.account:
                 return False
@@ -231,7 +339,6 @@ class SIPClient:
             return False
 
     def get_status(self):
-        """Get the current status of the SIP client."""
         return {
             'initialized': self.endpoint is not None and self.account is not None,
             'registered': self.is_registered(),
@@ -240,67 +347,49 @@ class SIPClient:
             'username': self.username
         }
 
-    def make_call(self, phone_number):
-        """
-        Make a call to the specified phone number.
-
-        Args:
-            phone_number: Phone number to call
-
-        Returns:
-            dict: Status of the call attempt
-        """
+    def make_call(self, phone_number, target="?"):
+        """Make a call to the specified phone number (labelled by `target`)."""
         try:
             if not self.endpoint or not self.account:
                 self.logger.error("✗ Cannot make call - SIP client not started")
-                return {
-                    'success': False,
-                    'message': 'SIP client not started'
-                }
+                return {'success': False, 'message': 'SIP client not started'}
 
             with self.call_lock:
                 if self.current_call is not None:
                     self.logger.error("✗ Call already in progress")
-                    return {
-                        'success': False,
-                        'message': 'A call is already in progress'
-                    }
+                    return {'success': False, 'message': 'A call is already in progress'}
 
-            self.logger.info(f"Initiating call to: {phone_number}")
+            self.metrics.record_attempt(target)
+            self._last_hangup_by_us = False
+            t0 = time.time()
 
-            # Format SIP URI (include port as per working example)
+            self.logger.info(f"[{target}] Initiating call to: {phone_number}")
             sip_uri = f"sip:{phone_number}@{self.proxy}"
             self.logger.sip_request(f"INVITE {sip_uri}")
 
-            # Create call
-            call = SIPCall(self.account, sip_client=self, app_logger=self.logger)
+            call = SIPCall(self.account, sip_client=self, app_logger=self.logger,
+                           target=target, metrics=self.metrics, t0=t0)
 
-            # Make call with CallOpParam
-            prm = pj.CallOpParam(True)  # True = use default settings
+            prm = pj.CallOpParam(True)
             call.makeCall(sip_uri, prm)
 
             with self.call_lock:
                 self.current_call = call
                 self.hangup_timer = threading.Timer(self.hangup_timeout, self._post_hangup_request)
                 self.hangup_timer.start()
-                self.logger.info(f"Auto-hangup timer started ({self.hangup_timeout} seconds)")
+                self.logger.info(f"[{target}] Auto-hangup timer started ({self.hangup_timeout}s)")
 
-            return {
-                'success': True,
-                'message': f'Call initiated. Will hang up in {self.hangup_timeout} seconds.'
-            }
+            return {'success': True,
+                    'message': f'Call initiated. Will hang up in {self.hangup_timeout} seconds.'}
 
         except Exception as e:
             self.logger.error(f"✗ Failed to make call: {e}")
             import traceback
             self.logger.info(traceback.format_exc())
-            return {
-                'success': False,
-                'message': f'Failed to make call: {str(e)}'
-            }
+            self.metrics.record_result(target, "error", reason=str(e))
+            return {'success': False, 'message': f'Failed to make call: {str(e)}'}
 
     def _clear_call(self):
-        """Cancel timer and clear current call reference atomically."""
         with self.call_lock:
             if self.hangup_timer:
                 self.hangup_timer.cancel()
@@ -308,7 +397,7 @@ class SIPClient:
             self.current_call = None
 
     def _post_hangup_request(self):
-        """Called from timer thread — register with PJSIP and hangup directly."""
+        """Timer thread: register with PJSIP and hang up the ringing call."""
         try:
             ep = pj.Endpoint.instance()
             try:
@@ -318,7 +407,7 @@ class SIPClient:
         except Exception as e:
             self.logger.error(f"Error in auto-hangup setup: {e}")
 
-        self.logger.call_event("Auto-hangup: 10 seconds elapsed")
+        self.logger.call_event(f"Auto-hangup: {self.hangup_timeout}s elapsed")
         with self.call_lock:
             call = self.current_call
             self.current_call = None
@@ -328,49 +417,91 @@ class SIPClient:
             try:
                 ci = call.getInfo()
                 if ci.state != pj.PJSIP_INV_STATE_DISCONNECTED:
-                    self.logger.sip_request("BYE (auto-hangup)")
+                    self._last_hangup_by_us = True
+                    self.logger.sip_request("BYE/CANCEL (auto-hangup)")
                     prm = pj.CallOpParam()
                     call.hangup(prm)
             except Exception as e:
                 self.logger.error(f"Error hanging up call: {e}")
 
     def stop(self):
-        """Stop the SIP client."""
         try:
             with self.call_lock:
-                # Cancel timer
                 if self.hangup_timer:
                     self.hangup_timer.cancel()
                     self.hangup_timer = None
-
-                # Hangup active call
                 if self.current_call:
                     try:
+                        self._last_hangup_by_us = True
                         self.logger.sip_request("BYE (hanging up active call)")
                         prm = pj.CallOpParam()
                         self.current_call.hangup(prm)
-                    except:
+                    except Exception:
                         pass
                     self.current_call = None
 
-            # Destroy account
             if self.account:
                 try:
                     del self.account
                     self.account = None
-                except:
+                except Exception:
                     pass
 
-            # Destroy endpoint
             if self.endpoint:
                 try:
                     self.endpoint.libDestroy()
                     del self.endpoint
                     self.endpoint = None
-                except:
+                except Exception:
                     pass
 
             self.logger.info("SIP client stopped")
-
         except Exception as e:
             self.logger.error(f"Error stopping SIP client: {e}")
+
+    def render_metrics(self):
+        """Prometheus text exposition of call metrics + registration state."""
+        m = self.metrics
+        lines = []
+        reg = 1 if self.is_registered() else 0
+        lines.append("# HELP gate_sip_registered SIP account registration state (1/0).")
+        lines.append("# TYPE gate_sip_registered gauge")
+        lines.append("gate_sip_registered %d" % reg)
+
+        with m.lock:
+            lines.append("# HELP gate_call_attempts_total Call attempts per target.")
+            lines.append("# TYPE gate_call_attempts_total counter")
+            for t, c in sorted(m.attempts.items()):
+                lines.append('gate_call_attempts_total{target="%s"} %d' % (_esc(t), c))
+
+            lines.append("# HELP gate_call_result_total Call outcomes per target.")
+            lines.append("# TYPE gate_call_result_total counter")
+            for (t, r), c in sorted(m.results.items()):
+                lines.append('gate_call_result_total{target="%s",result="%s"} %d' % (_esc(t), _esc(r), c))
+
+            lines.append("# HELP gate_last_sip_status_code Last SIP status code per target.")
+            lines.append("# TYPE gate_last_sip_status_code gauge")
+            for t, s in sorted(m.last_status.items()):
+                lines.append('gate_last_sip_status_code{target="%s"} %d' % (_esc(t), s))
+
+            lines.append("# HELP gate_last_call_reached Whether the last call reached the far end (got a provisional/answer).")
+            lines.append("# TYPE gate_last_call_reached gauge")
+            for t, v in sorted(m.last_reached.items()):
+                lines.append('gate_last_call_reached{target="%s"} %d' % (_esc(t), v))
+
+            lines.append("# HELP gate_last_call_duration_seconds Last call INVITE->disconnect duration per target.")
+            lines.append("# TYPE gate_last_call_duration_seconds gauge")
+            for t, v in sorted(m.last_duration_seconds.items()):
+                lines.append('gate_last_call_duration_seconds{target="%s"} %.3f' % (_esc(t), v))
+
+            lines.append("# HELP gate_last_call_ring_seconds Last call INVITE->first provisional per target.")
+            lines.append("# TYPE gate_last_call_ring_seconds gauge")
+            for t, v in sorted(m.last_ring_seconds.items()):
+                lines.append('gate_last_call_ring_seconds{target="%s"} %.3f' % (_esc(t), v))
+
+            lines.append("# HELP gate_last_call_timestamp_seconds Unix time of the last attempt per target.")
+            lines.append("# TYPE gate_last_call_timestamp_seconds gauge")
+            for t, v in sorted(m.last_ts.items()):
+                lines.append('gate_last_call_timestamp_seconds{target="%s"} %.0f' % (_esc(t), v))
+
+        return ("\n".join(lines) + "\n").encode()

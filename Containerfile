@@ -1,7 +1,7 @@
 # GSM Door Opener - Containerfile
 # CentOS Stream 9 with PJSIP built from source
 
-FROM quay.io/centos/centos:10
+FROM quay.io/centos/centos:9
 
 LABEL maintainer="GSM Door Opener"
 LABEL description="Flask web application for SIP-based GSM door opener with PJSIP"
@@ -47,7 +47,7 @@ RUN make dep && make && make install
 RUN ldconfig
 
 WORKDIR /usr/src/pjproject/pjsip-apps/src/swig/python
-RUN make && python setup.py install
+RUN make && python3 setup.py install
 
 RUN python3 -c "import pjsua2; print('PJSIP Python bindings installed successfully')"
 

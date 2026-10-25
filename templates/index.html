@@ -8,7 +8,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>Door Control</h1>
+        <h1>HamLab Access</h1>
 
         <div id="registrationStatus" class="info-box">
             <p>SIP Status:</p>
@@ -45,15 +45,21 @@
                 buttonsContainer.innerHTML = '';
                 callButtons = [];
 
-                // Create a button for each target
-                data.targets.forEach(target => {
+                // Targets are ordered {id, label} objects (back-compat: plain
+                // strings are still accepted).
+                data.targets.forEach(t => {
+                    const id = (typeof t === 'string') ? t : t.id;
+                    const label = (typeof t === 'string')
+                        ? (t.charAt(0) + t.slice(1).toLowerCase())
+                        : t.label;
                     const button = document.createElement('button');
                     button.className = 'call-button';
-                    button.textContent = `Open ${target.charAt(0) + target.slice(1).toLowerCase()}`;
-                    button.dataset.target = target;
+                    button.textContent = `Open ${label}`;
+                    button.dataset.target = id;
+                    button.dataset.label = label;
                     button.disabled = !isRegistered;
 
-                    button.addEventListener('click', () => makeCall(target, button));
+                    button.addEventListener('click', () => makeCall(id, label, button));
 
                     buttonsContainer.appendChild(button);
                     callButtons.push(button);
@@ -99,14 +105,14 @@
             }
         }
 
-        // Make a call to the specified target
-        async function makeCall(target, button) {
+        // Make a call to the specified target (id = internal, label = friendly)
+        async function makeCall(target, label, button) {
             const originalText = button.textContent;
 
             // Disable all buttons during call
             callButtons.forEach(btn => btn.disabled = true);
             button.textContent = 'Opening...';
-            statusMessage.textContent = `Initiating ${target.toLowerCase()} open...`;
+            statusMessage.textContent = `Opening ${label}...`;
             statusMessage.className = 'status-message info';
 
             try {
@@ -121,7 +127,7 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    statusMessage.textContent = `${target.charAt(0) + target.slice(1).toLowerCase()} opening signal sent`;
+                    statusMessage.textContent = `${label} opening signal sent`;
                     statusMessage.className = 'status-message success';
 
                     // Re-enable buttons after 11 seconds (when call ends)
