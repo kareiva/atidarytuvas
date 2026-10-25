@@ -46,6 +46,8 @@ class CallMetrics:
         # the INVITE vs dropping it silently.
         self.provisional = {}       # (target, code) -> count
         self.first_response = {}    # target -> first provisional code of last call (0=none)
+        self.final_status = {}      # (target, code) -> count of final disconnect codes
+        self.last_result = {}       # target -> last result string (for an info gauge)
         self.in_progress = 0        # 1 while a call is active
         # Registration health.
         self.reg_status = 0         # last registration status code
@@ -83,8 +85,10 @@ class CallMetrics:
                       ring_seconds=None, duration_seconds=None, reached=None):
         with self.lock:
             self.results[(target, result)] = self.results.get((target, result), 0) + 1
+            self.last_result[target] = result
             if status is not None:
                 self.last_status[target] = status
+                self.final_status[(target, status)] = self.final_status.get((target, status), 0) + 1
             if reason is not None:
                 self.last_reason[target] = reason
             if ring_seconds is not None:
@@ -569,7 +573,7 @@ class SIPClient:
             for t, v in sorted(m.last_duration_seconds.items()):
                 lines.append('gate_last_call_duration_seconds{target="%s"} %.3f' % (_esc(t), v))
 
-            lines.append("# HELP gate_last_call_ring_seconds Last call INVITE->first provisional per target.")
+            lines.append("# HELP gate_last_call_ring_seconds Post-dial delay: INVITE->first provisional (100/180/183) on the last call. ~1s = trunk answered; ~10s = timeout (no response).")
             lines.append("# TYPE gate_last_call_ring_seconds gauge")
             for t, v in sorted(m.last_ring_seconds.items()):
                 lines.append('gate_last_call_ring_seconds{target="%s"} %.3f' % (_esc(t), v))
@@ -588,5 +592,15 @@ class SIPClient:
             lines.append("# TYPE gate_last_call_first_response_code gauge")
             for t, v in sorted(m.first_response.items()):
                 lines.append('gate_last_call_first_response_code{target="%s"} %d' % (_esc(t), v))
+
+            lines.append("# HELP gate_call_final_status_total Final SIP disconnect code distribution per target.")
+            lines.append("# TYPE gate_call_final_status_total counter")
+            for (t, code), c in sorted(m.final_status.items()):
+                lines.append('gate_call_final_status_total{target="%s",code="%d"} %d' % (_esc(t), code, c))
+
+            lines.append("# HELP gate_last_call_result Current result of the last call per target (info gauge, value always 1).")
+            lines.append("# TYPE gate_last_call_result gauge")
+            for t, r in sorted(m.last_result.items()):
+                lines.append('gate_last_call_result{target="%s",result="%s"} 1' % (_esc(t), _esc(r)))
 
         return ("\n".join(lines) + "\n").encode()
