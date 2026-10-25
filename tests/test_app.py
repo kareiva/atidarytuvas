@@ -34,8 +34,13 @@ class FakeSip:
     def render_metrics(self):
         return b"gate_sip_registered 1\n"
 
+    busy = False
+
     def make_call(self, number, target="?", source=None):
-        self.calls.append((target, number))
+        self.calls.append((target, number, source))
+        if self.busy:
+            return {"success": False, "busy": True,
+                    "message": "A call is already in progress"}
         return {"success": True, "message": "Call initiated."}
 
     def last_call(self, target):
@@ -115,7 +120,24 @@ class TestRoutes:
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         # the correct E.164 number was passed with the target label
-        assert ("GATE", "+37068245573") in app_module.sip_client.calls
+        assert any(c[0] == "GATE" and c[1] == "+37068245573"
+                   for c in app_module.sip_client.calls)
+
+    def test_call_busy_returns_409(self, client):
+        app_module.sip_client.busy = True
+        try:
+            resp = client.post("/call", json={"target": "GATE"})
+            assert resp.status_code == 409
+            assert resp.get_json()["busy"] is True
+        finally:
+            app_module.sip_client.busy = False
+
+    def test_call_captures_client_ip_from_xff(self, client):
+        client.post("/call", json={"target": "DOOR"},
+                    headers={"X-Forwarded-For": "10.88.0.7, 172.20.0.1"})
+        # first XFF hop (real client / VPN IP) is passed as source
+        assert any(c[0] == "DOOR" and c[2] == "10.88.0.7"
+                   for c in app_module.sip_client.calls)
 
     def test_lastcall_unknown_target_404(self, client):
         assert client.get("/lastcall/NOPE").status_code == 404
