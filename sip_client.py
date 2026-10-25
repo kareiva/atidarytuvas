@@ -36,18 +36,48 @@ class CallMetrics:
         self.lock = threading.Lock()
         self.attempts = {}          # target -> count
         self.results = {}           # (target, result) -> count
-        self.last_status = {}       # target -> last SIP status code
+        self.last_status = {}       # target -> last SIP status code (final)
         self.last_reason = {}       # target -> last SIP reason text
         self.last_ts = {}           # target -> epoch of last attempt
         self.last_ring_seconds = {}     # target -> seconds INVITE->first provisional
         self.last_duration_seconds = {}  # target -> seconds INVITE->disconnect
         self.last_reached = {}      # target -> 1 if a provisional/answer was seen, else 0
+        # Provisional responses (100/180/183...) prove the trunk actually answered
+        # the INVITE vs dropping it silently.
+        self.provisional = {}       # (target, code) -> count
+        self.first_response = {}    # target -> first provisional code of last call (0=none)
+        self.in_progress = 0        # 1 while a call is active
+        # Registration health.
+        self.reg_status = 0         # last registration status code
+        self.reg_last_ok_ts = 0.0   # epoch of last successful (200) registration
+        self.reg_success_total = 0
+        self.reg_failure_total = 0
 
     def record_attempt(self, target):
         with self.lock:
             self.attempts[target] = self.attempts.get(target, 0) + 1
             self.last_ts[target] = time.time()
             self.last_reached[target] = 0
+            self.first_response[target] = 0
+
+    def record_provisional(self, target, code):
+        with self.lock:
+            self.provisional[(target, code)] = self.provisional.get((target, code), 0) + 1
+            if not self.first_response.get(target):
+                self.first_response[target] = code
+
+    def record_registration(self, code):
+        with self.lock:
+            self.reg_status = code
+            if code == 200:
+                self.reg_success_total += 1
+                self.reg_last_ok_ts = time.time()
+            elif code >= 300:
+                self.reg_failure_total += 1
+
+    def set_in_progress(self, v):
+        with self.lock:
+            self.in_progress = 1 if v else 0
 
     def record_result(self, target, result, status=None, reason=None,
                       ring_seconds=None, duration_seconds=None, reached=None):
@@ -76,6 +106,31 @@ def _esc(v):
     return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
+def classify_result(answered, we_hung_up, reached, last_status):
+    """Classify a finished call. Pure function (unit-tested).
+
+    answered    - call reached CONFIRMED (200)
+    we_hung_up  - our auto-hangup/BYE/CANCEL initiated the teardown
+    reached     - a provisional (100/180/183) or answer was seen
+    last_status - final SIP status code (0 if none)
+
+    Returns one of: answered | no_response | cancelled | rejected | ended.
+    """
+    if answered:
+        return "answered"
+    if we_hung_up and not reached:
+        # We cancelled and the trunk never sent a provisional: the INVITE was
+        # dropped/unanswered (call not delivered).
+        return "no_response"
+    if we_hung_up and last_status in (0, 200, 487):
+        # Our CANCEL/BYE after the far end rang: normal ring-and-open path.
+        return "cancelled"
+    if last_status >= 400:
+        # Provider/callee ended it and it was not our cancel.
+        return "rejected"
+    return "ended"
+
+
 class SIPAccount(pj.Account):
     """Custom Account class to handle registration callbacks."""
 
@@ -90,6 +145,8 @@ class SIPAccount(pj.Account):
         status_code = ai.regStatus
         reason = prm.reason
         self.logger.registration_event(status_code, reason)
+        if self.sip_client and self.sip_client.metrics:
+            self.sip_client.metrics.record_registration(status_code)
 
 
 # Readable names for the PJSIP INVITE session states.
@@ -142,12 +199,12 @@ class SIPCall(pj.Call):
                 self.reached = True
                 if self.metrics:
                     self.metrics.mark_reached(self.target, elapsed)
-            if last_status == 100:
-                self.logger.sip_response(100, "Trying")
-            elif last_status == 180:
-                self.logger.sip_response(180, "Ringing")
-            elif last_status == 183:
-                self.logger.sip_response(183, "Session Progress")
+            if self.metrics and last_status:
+                self.metrics.record_provisional(self.target, last_status)
+            names = {100: "Trying", 180: "Ringing", 181: "Call Is Being Forwarded",
+                     182: "Queued", 183: "Session Progress"}
+            if last_status in names:
+                self.logger.sip_response(last_status, names[last_status])
 
         elif state == pj.PJSIP_INV_STATE_CONFIRMED:
             self.answered = True
@@ -167,22 +224,16 @@ class SIPCall(pj.Call):
         # Did WE end it? (auto-hangup after the ring window, or app shutdown)
         we_hung_up = bool(self.sip_client and getattr(self.sip_client, "_last_hangup_by_us", False))
 
-        if self.answered:
-            result = "answered"
-        elif we_hung_up and last_status in (0, 200, 487):
-            # Our CANCEL/BYE after the ring window (487 Request Terminated is the
-            # expected response to a CANCEL). This is the normal ring-and-open path.
-            result = "cancelled"
-        elif last_status >= 400:
-            # Provider/callee ended it and it was NOT our cancel.
-            result = "rejected"
-        else:
-            result = "ended"
+        result = classify_result(self.answered, we_hung_up, self.reached, last_status)
 
         if result == "rejected":
             self.logger.error(
                 "[{0}] Call FAILED: {1} {2} (reached={3}, +{4:.1f}s) — provider/callee ended it".format(
                     self.target, last_status, last_reason, self.reached, elapsed))
+        elif result == "no_response":
+            self.logger.error(
+                "[{0}] NO RESPONSE: trunk never answered the INVITE (0 provisional, {1:.1f}s, last sip={2}) — call not delivered".format(
+                    self.target, elapsed, last_status))
         elif result == "cancelled":
             self.logger.call_event(
                 "[{0}] Call cancelled by us after {1:.1f}s (reached={2}, last sip={3}) — normal ring-and-open".format(
@@ -377,6 +428,7 @@ class SIPClient:
                 self.current_call = call
                 self.hangup_timer = threading.Timer(self.hangup_timeout, self._post_hangup_request)
                 self.hangup_timer.start()
+                self.metrics.set_in_progress(True)
                 self.logger.info(f"[{target}] Auto-hangup timer started ({self.hangup_timeout}s)")
 
             return {'success': True,
@@ -395,6 +447,7 @@ class SIPClient:
                 self.hangup_timer.cancel()
                 self.hangup_timer = None
             self.current_call = None
+        self.metrics.set_in_progress(False)
 
     def _post_hangup_request(self):
         """Timer thread: register with PJSIP and hang up the ringing call."""
@@ -464,11 +517,33 @@ class SIPClient:
         m = self.metrics
         lines = []
         reg = 1 if self.is_registered() else 0
+        lines.append("# HELP gate_build_info Build/runtime info (constant 1).")
+        lines.append("# TYPE gate_build_info gauge")
+        lines.append('gate_build_info{version="%s",pjsip="%s",proxy="%s",username="%s"} 1' % (
+            _esc(os.getenv("APP_VERSION", "1.0")), _esc(os.getenv("PJSIP_VERSION", "")),
+            _esc(self.proxy), _esc(self.username)))
+
         lines.append("# HELP gate_sip_registered SIP account registration state (1/0).")
         lines.append("# TYPE gate_sip_registered gauge")
         lines.append("gate_sip_registered %d" % reg)
 
         with m.lock:
+            lines.append("# HELP gate_sip_registration_status_code Last REGISTER status code.")
+            lines.append("# TYPE gate_sip_registration_status_code gauge")
+            lines.append("gate_sip_registration_status_code %d" % m.reg_status)
+            lines.append("# HELP gate_sip_last_register_ok_timestamp_seconds Unix time of last 200 REGISTER.")
+            lines.append("# TYPE gate_sip_last_register_ok_timestamp_seconds gauge")
+            lines.append("gate_sip_last_register_ok_timestamp_seconds %.0f" % m.reg_last_ok_ts)
+            lines.append("# HELP gate_sip_registrations_total Successful REGISTERs.")
+            lines.append("# TYPE gate_sip_registrations_total counter")
+            lines.append("gate_sip_registrations_total %d" % m.reg_success_total)
+            lines.append("# HELP gate_sip_register_failures_total Failed REGISTERs (>=300).")
+            lines.append("# TYPE gate_sip_register_failures_total counter")
+            lines.append("gate_sip_register_failures_total %d" % m.reg_failure_total)
+            lines.append("# HELP gate_call_in_progress Whether a call is active now (1/0).")
+            lines.append("# TYPE gate_call_in_progress gauge")
+            lines.append("gate_call_in_progress %d" % m.in_progress)
+
             lines.append("# HELP gate_call_attempts_total Call attempts per target.")
             lines.append("# TYPE gate_call_attempts_total counter")
             for t, c in sorted(m.attempts.items()):
@@ -503,5 +578,15 @@ class SIPClient:
             lines.append("# TYPE gate_last_call_timestamp_seconds gauge")
             for t, v in sorted(m.last_ts.items()):
                 lines.append('gate_last_call_timestamp_seconds{target="%s"} %.0f' % (_esc(t), v))
+
+            lines.append("# HELP gate_call_provisional_total Provisional responses (100/180/183) received per target+code — proves the trunk answered the INVITE.")
+            lines.append("# TYPE gate_call_provisional_total counter")
+            for (t, code), c in sorted(m.provisional.items()):
+                lines.append('gate_call_provisional_total{target="%s",code="%d"} %d' % (_esc(t), code, c))
+
+            lines.append("# HELP gate_last_call_first_response_code First provisional SIP code of the last call per target (0=trunk never answered).")
+            lines.append("# TYPE gate_last_call_first_response_code gauge")
+            for t, v in sorted(m.first_response.items()):
+                lines.append('gate_last_call_first_response_code{target="%s"} %d' % (_esc(t), v))
 
         return ("\n".join(lines) + "\n").encode()
