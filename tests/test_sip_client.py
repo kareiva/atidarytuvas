@@ -130,6 +130,15 @@ class TestCallMetrics:
         assert m.reg_failure_total == 2
         assert m.reg_last_ok_ts > 0
 
+    def test_source_tracking(self):
+        m = sc.CallMetrics()
+        m.record_attempt("GATE", source="10.88.0.7")
+        m.record_attempt("GATE", source="10.88.0.7")
+        m.record_attempt("GATE", source="192.168.73.50")
+        assert m.source_counts[("GATE", "10.88.0.7")] == 2
+        assert m.source_counts[("GATE", "192.168.73.50")] == 1
+        assert m.last_source["GATE"] == "192.168.73.50"
+
     def test_in_progress_toggle(self):
         m = sc.CallMetrics()
         assert m.in_progress == 0
@@ -183,6 +192,13 @@ class TestRenderMetrics:
         assert "gate_sip_registrations_total 1" in out
         assert 'gate_call_final_status_total{target="GATE",code="487"} 1' in out
         assert 'gate_last_call_result{target="GATE",result="no_response"} 1' in out
+
+    def test_source_label_in_output(self):
+        c = _client()
+        c.metrics.record_attempt("GATE", source="10.88.0.7")
+        out = c.render_metrics().decode()
+        assert 'gate_call_source_total{target="GATE",source="10.88.0.7"} 1' in out
+        assert 'gate_last_call_source{target="GATE",source="10.88.0.7"} 1' in out
 
     def test_label_escaping_in_output(self):
         c = _client()
