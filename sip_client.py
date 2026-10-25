@@ -516,6 +516,21 @@ class SIPClient:
         except Exception as e:
             self.logger.error(f"Error stopping SIP client: {e}")
 
+    def last_call(self, target):
+        """Snapshot of the last call's outcome for a target (for the web UI)."""
+        m = self.metrics
+        with m.lock:
+            return {
+                "target": target,
+                "result": m.last_result.get(target),
+                "reached": bool(m.last_reached.get(target, 0)),
+                "status": m.last_status.get(target, 0),
+                "first_response_code": m.first_response.get(target, 0),
+                "ring_seconds": m.last_ring_seconds.get(target),
+                "timestamp": m.last_ts.get(target, 0),
+                "in_progress": bool(m.in_progress),
+            }
+
     def render_metrics(self):
         """Prometheus text exposition of call metrics + registration state."""
         m = self.metrics

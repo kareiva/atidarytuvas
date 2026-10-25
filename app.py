@@ -192,6 +192,22 @@ def status():
         })
 
 
+@app.route('/lastcall/<target>', methods=['GET'])
+def lastcall(target):
+    """Outcome of the last call to a target (the UI polls this after a call to
+    show success/failure, since /call returns as soon as the INVITE is sent)."""
+    if target not in PHONE_NUMBERS:
+        return jsonify({'error': f'Unknown target: {target}'}), 404
+    if not sip_client:
+        return jsonify({'target': target, 'result': None, 'reached': False})
+    data = sip_client.last_call(target)
+    # delivered = the far end was reached and it wasn't a failure outcome
+    data['delivered'] = bool(
+        data.get('reached') and data.get('result') in ('cancelled', 'answered', 'ended'))
+    data['hangup_timeout'] = sip_client.hangup_timeout
+    return jsonify(data)
+
+
 @app.route('/metrics', methods=['GET'])
 def metrics():
     """Prometheus metrics: registration state + per-target call attempts,
