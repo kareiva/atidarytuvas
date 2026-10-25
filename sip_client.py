@@ -43,6 +43,7 @@ class CallMetrics:
         self.last_duration_seconds = {}  # target -> seconds INVITE->disconnect
         self.last_reached = {}      # target -> 1 if a provisional/answer was seen, else 0
         self.last_source = {}       # target -> client IP that pressed (real/VPN, via XFF)
+        self.source_counts = {}     # (target, source) -> press count
         # Provisional responses (100/180/183...) prove the trunk actually answered
         # the INVITE vs dropping it silently.
         self.provisional = {}       # (target, code) -> count
@@ -64,6 +65,8 @@ class CallMetrics:
             self.first_response[target] = 0
             if source:
                 self.last_source[target] = source
+                self.source_counts[(target, source)] = \
+                    self.source_counts.get((target, source), 0) + 1
 
     def record_provisional(self, target, code):
         with self.lock:
@@ -623,5 +626,15 @@ class SIPClient:
             lines.append("# TYPE gate_last_call_result gauge")
             for t, r in sorted(m.last_result.items()):
                 lines.append('gate_last_call_result{target="%s",result="%s"} 1' % (_esc(t), _esc(r)))
+
+            lines.append("# HELP gate_call_source_total Presses per target and source IP (real client/VPN via X-Forwarded-For).")
+            lines.append("# TYPE gate_call_source_total counter")
+            for (t, src), c in sorted(m.source_counts.items()):
+                lines.append('gate_call_source_total{target="%s",source="%s"} %d' % (_esc(t), _esc(src), c))
+
+            lines.append("# HELP gate_last_call_source Source IP of the last press per target (info gauge, value always 1).")
+            lines.append("# TYPE gate_last_call_source gauge")
+            for t, src in sorted(m.last_source.items()):
+                lines.append('gate_last_call_source{target="%s",source="%s"} 1' % (_esc(t), _esc(src)))
 
         return ("\n".join(lines) + "\n").encode()
