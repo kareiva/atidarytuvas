@@ -193,3 +193,15 @@ the code baked in, but `app.py`/`sip_client.py`/`logger.py`/`templates` are also
 `git` edit + `systemctl --user restart atidarytuvas.service` — no rebuild. Secrets
 (SIP creds) live in a 600 `EnvironmentFile`, not the repo. `/metrics` is scraped by
 the fnuc Prometheus (job `gate`, 30s), internal only.
+
+## Critical gotcha: INVITE size vs path MTU
+
+If outbound calls silently fail (REGISTER OK, but `no_response` — no 100/180/183,
+`1st res in ~10000 ms`), suspect the **INVITE exceeding the path MTU**. The route
+to the trunk here is tunnelled (PMTU 1420: `ip route get <proxy-ip>`), and PJSIP's
+default SDP (~11 codecs + a text m-line) makes the INVITE ~1458 B, which is dropped
+(DF) before egress. Fix = limit codecs to PCMU only at startup (see `sip_client.py`,
+`codecSetPriority`); INVITE drops to ~1159 B (~1374 B authed) < 1420. Verify with
+`tcpdump -ni any 'udp and host <proxy-ip>'` (the INVITE won't egress until it fits)
+and `ping -M do -s <size> <proxy-ip>`. Bulletproof alternative: SIP over TCP. Full
+write-up + debug playbook in README.md ("Findings & troubleshooting").
