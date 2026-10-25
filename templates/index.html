@@ -123,12 +123,14 @@
                                   r.timestamp && r.timestamp >= startTs - 3;
                     if (fresh) {
                         if (r.delivered) {
-                            statusMessage.textContent = `${label} opened ✓`;
+                            // Call reached the opener (it rang). Ring-and-open
+                            // devices then reject (486/488/603) to signal open.
+                            statusMessage.textContent = `${label} — signal delivered ✓`;
                             statusMessage.className = 'status-message success';
                         } else {
                             const sip = r.status ? ` (SIP ${r.status})` : '';
                             statusMessage.textContent =
-                                `${label} FAILED — ${r.result}${sip}`;
+                                `${label} — not delivered${sip}`;
                             statusMessage.className = 'status-message error';
                         }
                         finishCall(button, originalText);

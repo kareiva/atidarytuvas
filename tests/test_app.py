@@ -158,3 +158,13 @@ class TestRoutes:
         r = client.get("/lastcall/GATE").get_json()
         assert r["delivered"] is False
         assert r["result"] == "no_response"
+
+    def test_lastcall_reject_after_ring_is_delivered(self, client):
+        # ring-and-open devices reject (486/488/603) AFTER ringing to signal open:
+        # reached=True => delivered, even though result is "rejected".
+        app_module.sip_client._last["DOOR"] = {
+            "target": "DOOR", "result": "rejected", "reached": True,
+            "status": 488, "timestamp": 1000, "in_progress": False}
+        r = client.get("/lastcall/DOOR").get_json()
+        assert r["delivered"] is True
+        assert r["result"] == "rejected"
