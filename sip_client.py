@@ -1,3 +1,4 @@
+import os
 import socket
 import threading
 import time
@@ -130,8 +131,16 @@ class SIPClient:
             self.logger.info(f"Proxy: {self.proxy}")
             self.logger.info(f"Username: {self.username}")
 
-            self.proxy = self._resolve_proxy(self.proxy)
-            self.logger.info(f"Resolved proxy address: {self.proxy}")
+            # Use the proxy FQDN in SIP URIs (like Linphone) and let pjsip do DNS.
+            # Rewriting it to a raw IP (old _resolve_proxy behaviour) makes the
+            # From/Request-URI domain an IP, which peoplefone's SBC accepts for
+            # REGISTER but silently drops for outbound INVITEs. Opt back in with
+            # SIP_RESOLVE_PROXY=true if ever needed.
+            if os.getenv("SIP_RESOLVE_PROXY", "false").lower() in ("1", "true", "yes"):
+                self.proxy = self._resolve_proxy(self.proxy)
+                self.logger.info(f"Resolved proxy address: {self.proxy}")
+            else:
+                self.logger.info(f"Using proxy FQDN (DNS via pjsip): {self.proxy}")
 
             # Create and initialize endpoint
             ep_cfg = pj.EpConfig()
@@ -153,9 +162,32 @@ class SIPClient:
 
             # Start the library
             self.endpoint.libStart()
-
             self.endpoint.audDevManager().setNullDev()
-            
+
+            # Shrink the INVITE below the path MTU. The default SDP offers ~11
+            # audio codecs + a text media line (~1458-byte INVITE); the route to
+            # the proxy is tunnelled (PMTU ~1420), so the oversized INVITE is
+            # dropped (DF set) while small REGISTER/OPTIONS pass — calls silently
+            # fail. A door opener needs no real audio, so keep only PCMU/PCMA.
+            try:
+                try:
+                    codecs = self.endpoint.codecEnum2()
+                except Exception:
+                    codecs = self.endpoint.codecEnum()
+                # Keep only PCMU (G.711u). One codec keeps the INVITE well under
+                # the ~1420 PMTU even after the Proxy-Authorization header is added
+                # on the authenticated re-INVITE. Media isn't used (null dev).
+                kept = []
+                for ci in codecs:
+                    cid = ci.codecId
+                    keep = cid.startswith("PCMU/")
+                    self.endpoint.codecSetPriority(cid, 255 if keep else 0)
+                    if keep:
+                        kept.append(cid)
+                self.logger.info(f"Audio codecs limited to {kept} (shrink INVITE < PMTU)")
+            except Exception as e:
+                self.logger.error(f"Could not limit codecs: {e}")
+
             self.logger.sip_request("REGISTER (sending to proxy)")
 
             # Create account configuration
