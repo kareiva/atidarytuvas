@@ -189,3 +189,25 @@ class TestRenderMetrics:
         c.metrics.record_attempt('weird"name')
         out = c.render_metrics().decode()
         assert 'target="weird\\"name"' in out
+
+
+class TestLastCall:
+    def test_snapshot_after_result(self):
+        c = _client()
+        c.metrics.record_attempt("GATE")
+        c.metrics.mark_reached("GATE", 1.2)
+        c.metrics.record_provisional("GATE", 183)
+        c.metrics.record_result("GATE", "cancelled", status=487,
+                                duration_seconds=10.0, reached=True)
+        snap = c.last_call("GATE")
+        assert snap["result"] == "cancelled"
+        assert snap["reached"] is True
+        assert snap["status"] == 487
+        assert snap["first_response_code"] == 183
+        assert snap["timestamp"] > 0
+
+    def test_snapshot_unknown_target_is_empty(self):
+        c = _client()
+        snap = c.last_call("NEVER")
+        assert snap["result"] is None
+        assert snap["reached"] is False

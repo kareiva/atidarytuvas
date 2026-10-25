@@ -21,8 +21,11 @@ import app as app_module  # noqa: E402
 
 
 class FakeSip:
+    hangup_timeout = 10
+
     def __init__(self):
         self.calls = []
+        self._last = {}
 
     def get_status(self):
         return {"registered": True, "has_active_call": False,
@@ -34,6 +37,12 @@ class FakeSip:
     def make_call(self, number, target="?", source=None):
         self.calls.append((target, number))
         return {"success": True, "message": "Call initiated."}
+
+    def last_call(self, target):
+        return self._last.get(target, {
+            "target": target, "result": None, "reached": False, "status": 0,
+            "first_response_code": 0, "ring_seconds": None, "timestamp": 0,
+            "in_progress": False})
 
 
 @pytest.fixture()
@@ -107,3 +116,23 @@ class TestRoutes:
         assert resp.get_json()["success"] is True
         # the correct E.164 number was passed with the target label
         assert ("GATE", "+37068245573") in app_module.sip_client.calls
+
+    def test_lastcall_unknown_target_404(self, client):
+        assert client.get("/lastcall/NOPE").status_code == 404
+
+    def test_lastcall_delivered(self, client):
+        app_module.sip_client._last["GATE"] = {
+            "target": "GATE", "result": "cancelled", "reached": True,
+            "status": 487, "timestamp": 1000, "in_progress": False}
+        r = client.get("/lastcall/GATE").get_json()
+        assert r["delivered"] is True
+        assert r["result"] == "cancelled"
+        assert r["hangup_timeout"] == 10
+
+    def test_lastcall_failed_not_delivered(self, client):
+        app_module.sip_client._last["GATE"] = {
+            "target": "GATE", "result": "no_response", "reached": False,
+            "status": 487, "timestamp": 1000, "in_progress": False}
+        r = client.get("/lastcall/GATE").get_json()
+        assert r["delivered"] is False
+        assert r["result"] == "no_response"
