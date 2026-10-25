@@ -42,6 +42,7 @@ class CallMetrics:
         self.last_ring_seconds = {}     # target -> seconds INVITE->first provisional
         self.last_duration_seconds = {}  # target -> seconds INVITE->disconnect
         self.last_reached = {}      # target -> 1 if a provisional/answer was seen, else 0
+        self.last_source = {}       # target -> client IP that pressed (real/VPN, via XFF)
         # Provisional responses (100/180/183...) prove the trunk actually answered
         # the INVITE vs dropping it silently.
         self.provisional = {}       # (target, code) -> count
@@ -55,12 +56,14 @@ class CallMetrics:
         self.reg_success_total = 0
         self.reg_failure_total = 0
 
-    def record_attempt(self, target):
+    def record_attempt(self, target, source=None):
         with self.lock:
             self.attempts[target] = self.attempts.get(target, 0) + 1
             self.last_ts[target] = time.time()
             self.last_reached[target] = 0
             self.first_response[target] = 0
+            if source:
+                self.last_source[target] = source
 
     def record_provisional(self, target, code):
         with self.lock:
@@ -402,8 +405,9 @@ class SIPClient:
             'username': self.username
         }
 
-    def make_call(self, phone_number, target="?"):
-        """Make a call to the specified phone number (labelled by `target`)."""
+    def make_call(self, phone_number, target="?", source=None):
+        """Make a call to the specified phone number (labelled by `target`).
+        `source` = the client IP that pressed (for logging/attribution)."""
         try:
             if not self.endpoint or not self.account:
                 self.logger.error("✗ Cannot make call - SIP client not started")
@@ -412,13 +416,14 @@ class SIPClient:
             with self.call_lock:
                 if self.current_call is not None:
                     self.logger.error("✗ Call already in progress")
-                    return {'success': False, 'message': 'A call is already in progress'}
+                    return {'success': False, 'busy': True,
+                            'message': 'A call is already in progress'}
 
-            self.metrics.record_attempt(target)
+            self.metrics.record_attempt(target, source=source)
             self._last_hangup_by_us = False
             t0 = time.time()
 
-            self.logger.info(f"[{target}] Initiating call to: {phone_number}")
+            self.logger.info(f"[{target}] Initiating call to: {phone_number} (from {source or '?'})")
             sip_uri = f"sip:{phone_number}@{self.proxy}"
             self.logger.sip_request(f"INVITE {sip_uri}")
 
@@ -529,6 +534,7 @@ class SIPClient:
                 "ring_seconds": m.last_ring_seconds.get(target),
                 "timestamp": m.last_ts.get(target, 0),
                 "in_progress": bool(m.in_progress),
+                "source": m.last_source.get(target),
             }
 
     def render_metrics(self):

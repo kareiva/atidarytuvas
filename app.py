@@ -69,6 +69,15 @@ def ordered_targets():
     names = sorted(PHONE_NUMBERS.keys(), key=lambda n: (_target_order(n), n))
     return [{"id": n, "label": _target_label(n)} for n in names]
 
+
+def client_ip():
+    """Real client IP of the presser (LAN or WireGuard), not the traefik proxy.
+    traefik sets X-Forwarded-For; take the first (closest-to-client) hop."""
+    xff = request.headers.get('X-Forwarded-For', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.headers.get('X-Real-IP') or request.remote_addr
+
 # Validate configuration
 if not all([SIP_PROXY, SIP_USERNAME, SIP_PASSWORD]):
     logger.error("Missing required configuration. Please check your .env file.")
@@ -151,11 +160,13 @@ def make_call():
                     'message': 'Failed to initialize SIP client. Check configuration and logs.'
                 }), 500
 
-        # Make the call (pass the target label so metrics/logs are per-target)
-        result = sip_client.make_call(phone_number, target=target)
+        # Make the call (pass target + presser IP for per-target metrics/logs)
+        result = sip_client.make_call(phone_number, target=target, source=client_ip())
 
         if result['success']:
             return jsonify(result), 200
+        elif result.get('busy'):
+            return jsonify(result), 409      # another call is already active
         else:
             return jsonify(result), 500
 
