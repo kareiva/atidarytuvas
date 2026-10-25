@@ -88,6 +88,18 @@ class TestCallMetrics:
         assert m.last_reason["GATE"] == "Request Terminated"
         assert m.last_duration_seconds["GATE"] == 10.0
         assert m.last_reached["GATE"] == 0
+        # final-status distribution + current-result info are also recorded
+        assert m.final_status[("GATE", 487)] == 1
+        assert m.last_result["GATE"] == "no_response"
+
+    def test_final_status_distribution_accumulates(self):
+        m = sc.CallMetrics()
+        m.record_result("GATE", "no_response", status=487)
+        m.record_result("GATE", "rejected", status=486)
+        m.record_result("GATE", "no_response", status=487)
+        assert m.final_status[("GATE", 487)] == 2
+        assert m.final_status[("GATE", 486)] == 1
+        assert m.last_result["GATE"] == "no_response"
 
     def test_provisional_and_first_response(self):
         m = sc.CallMetrics()
@@ -169,6 +181,8 @@ class TestRenderMetrics:
         assert 'gate_call_result_total{target="GATE",result="no_response"} 1' in out
         assert 'gate_last_sip_status_code{target="GATE"} 487' in out
         assert "gate_sip_registrations_total 1" in out
+        assert 'gate_call_final_status_total{target="GATE",code="487"} 1' in out
+        assert 'gate_last_call_result{target="GATE",result="no_response"} 1' in out
 
     def test_label_escaping_in_output(self):
         c = _client()
