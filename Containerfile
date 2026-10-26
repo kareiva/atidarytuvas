@@ -57,11 +57,6 @@ COPY requirements.txt .
 
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-COPY app.py sip_client.py logger.py ./
-COPY templates/ templates/
-COPY static/ static/
-COPY .env.example .env.example
-
 RUN dnf remove -y \
     gcc \
     gcc-c++ \
@@ -70,6 +65,11 @@ RUN dnf remove -y \
     && dnf clean all \
     && rm -rf /usr/src/pjproject \
     && rm -rf /var/cache/dnf/*
+
+COPY app.py sip_client.py logger.py ./
+COPY templates/ templates/
+COPY static/ static/
+COPY .env.example .env.example
 
 RUN useradd -r -u 1000 -s /bin/bash hamlab && \
     chown -R hamlab:hamlab /app
