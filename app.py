@@ -48,6 +48,36 @@ for key, value in os.environ.items():
         PHONE_NUMBERS[name] = value
         logger.info(f"Loaded phone number: {name} -> {value}")
 
+# Friendly UI labels + display order. Internal ids (DOOR/GATE/LAB) are kept for
+# /call; labels/order are overridable via PHONE_LABEL_<NAME> / PHONE_ORDER_<NAME>.
+DEFAULT_LABELS = {"GATE": "Parking Gate", "DOOR": "Main Entrance", "LAB": "Lab"}
+DEFAULT_ORDER = {"GATE": 1, "DOOR": 2, "LAB": 3}
+
+
+def _target_label(name):
+    return os.getenv(f"PHONE_LABEL_{name}", DEFAULT_LABELS.get(name, name.title()))
+
+
+def _target_order(name):
+    try:
+        return int(os.getenv(f"PHONE_ORDER_{name}", DEFAULT_ORDER.get(name, 99)))
+    except ValueError:
+        return 99
+
+
+def ordered_targets():
+    names = sorted(PHONE_NUMBERS.keys(), key=lambda n: (_target_order(n), n))
+    return [{"id": n, "label": _target_label(n)} for n in names]
+
+
+def client_ip():
+    """Real client IP of the presser (LAN or WireGuard), not the traefik proxy.
+    traefik sets X-Forwarded-For; take the first (closest-to-client) hop."""
+    xff = request.headers.get('X-Forwarded-For', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.headers.get('X-Real-IP') or request.remote_addr
+
 # Validate configuration
 if not all([SIP_PROXY, SIP_USERNAME, SIP_PASSWORD]):
     logger.error("Missing required configuration. Please check your .env file.")
@@ -130,11 +160,13 @@ def make_call():
                     'message': 'Failed to initialize SIP client. Check configuration and logs.'
                 }), 500
 
-        # Make the call
-        result = sip_client.make_call(phone_number)
+        # Make the call (pass target + presser IP for per-target metrics/logs)
+        result = sip_client.make_call(phone_number, target=target, source=client_ip())
 
         if result['success']:
             return jsonify(result), 200
+        elif result.get('busy'):
+            return jsonify(result), 409      # another call is already active
         else:
             return jsonify(result), 500
 
@@ -171,6 +203,34 @@ def status():
         })
 
 
+@app.route('/lastcall/<target>', methods=['GET'])
+def lastcall(target):
+    """Outcome of the last call to a target (the UI polls this after a call to
+    show success/failure, since /call returns as soon as the INVITE is sent)."""
+    if target not in PHONE_NUMBERS:
+        return jsonify({'error': f'Unknown target: {target}'}), 404
+    if not sip_client:
+        return jsonify({'target': target, 'result': None, 'reached': False})
+    data = sip_client.last_call(target)
+    # delivered = the far end was reached and it wasn't a failure outcome
+    data['delivered'] = bool(
+        data.get('reached') and data.get('result') in ('cancelled', 'answered', 'ended'))
+    data['hangup_timeout'] = sip_client.hangup_timeout
+    return jsonify(data)
+
+
+@app.route('/metrics', methods=['GET'])
+def metrics():
+    """Prometheus metrics: registration state + per-target call attempts,
+    outcomes, last SIP status code, reached/ring/duration. Scraped by Prometheus
+    (job `gate`). Lets us see per-target whether calls actually reach the far end."""
+    if sip_client:
+        body = sip_client.render_metrics()
+    else:
+        body = b"gate_sip_registered 0\n"
+    return app.response_class(body, mimetype="text/plain; version=0.0.4")
+
+
 @app.route('/targets', methods=['GET'])
 def get_targets():
     """
@@ -180,7 +240,7 @@ def get_targets():
         JSON response with list of targets
     """
     return jsonify({
-        'targets': list(PHONE_NUMBERS.keys())
+        'targets': ordered_targets()
     })
 
 
