@@ -22,7 +22,8 @@
         <div id="statusMessage" class="status-message"></div>
 
         <div class="info-text">
-            <p>Opens door via GSM call. Automatically hangs up after some time.</p>
+            <p>Opens via SIP call; auto-hangs-up after a few seconds.</p>
+            <p><a href="https://wiki.int.hamlab.lt/services/gate-opener/#open-a-door" target="_blank" rel="noopener">📱 Add to phone home screen — setup &amp; docs</a></p>
         </div>
     </div>
 
@@ -105,6 +106,49 @@
             }
         }
 
+        // Re-enable buttons + restore a button's label after a call finishes.
+        function finishCall(button, originalText) {
+            callButtons.forEach(btn => btn.disabled = false);
+            button.textContent = originalText;
+        }
+
+        // Poll /lastcall until the outcome of this call lands, then show
+        // green (delivered) or red (failed). startTs = epoch secs at dial time.
+        function pollOutcome(target, label, button, originalText, startTs) {
+            const deadline = Date.now() + 25000;  // give up after ~25s
+            async function tick() {
+                try {
+                    const resp = await fetch(`/lastcall/${target}`);
+                    const r = await resp.json();
+                    const fresh = r && r.result && !r.in_progress &&
+                                  r.timestamp && r.timestamp >= startTs - 3;
+                    if (fresh) {
+                        if (r.delivered) {
+                            // Call reached the opener (it rang). Ring-and-open
+                            // devices then reject (486/488/603) to signal open.
+                            statusMessage.textContent = `${label} — signal delivered ✓`;
+                            statusMessage.className = 'status-message success';
+                        } else {
+                            const sip = r.status ? ` (SIP ${r.status})` : '';
+                            statusMessage.textContent =
+                                `${label} — not delivered${sip}`;
+                            statusMessage.className = 'status-message error';
+                        }
+                        finishCall(button, originalText);
+                        return;
+                    }
+                } catch (e) { /* keep polling */ }
+                if (Date.now() < deadline) {
+                    setTimeout(tick, 1500);
+                } else {
+                    statusMessage.textContent = `${label}: result unknown (timeout)`;
+                    statusMessage.className = 'status-message error';
+                    finishCall(button, originalText);
+                }
+            }
+            setTimeout(tick, 1500);
+        }
+
         // Make a call to the specified target (id = internal, label = friendly)
         async function makeCall(target, label, button) {
             const originalText = button.textContent;
@@ -127,21 +171,21 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    statusMessage.textContent = `${label} opening signal sent`;
-                    statusMessage.className = 'status-message success';
-
-                    // Re-enable buttons after 11 seconds (when call ends)
-                    setTimeout(() => {
-                        callButtons.forEach(btn => btn.disabled = false);
-                        button.textContent = originalText;
-                        statusMessage.textContent = '';
-                        statusMessage.className = 'status-message';
-                    }, 11000);
+                    // /call returns as soon as the INVITE is sent; the real
+                    // outcome lands ~hangup_timeout later. Poll /lastcall and
+                    // color the status green (delivered) or red (failed).
+                    statusMessage.textContent = `Opening ${label}… (ringing)`;
+                    statusMessage.className = 'status-message info';
+                    pollOutcome(target, label, button, originalText, Date.now() / 1000);
+                } else if (data.busy) {
+                    // Another call is active (single call at a time) — not a failure.
+                    statusMessage.textContent = 'Busy — another call in progress, try again';
+                    statusMessage.className = 'status-message info';
+                    finishCall(button, originalText);
                 } else {
                     statusMessage.textContent = 'Error: ' + data.message;
                     statusMessage.className = 'status-message error';
-                    callButtons.forEach(btn => btn.disabled = false);
-                    button.textContent = originalText;
+                    finishCall(button, originalText);
                     // Re-check status in case registration was lost
                     checkStatus();
                 }

@@ -212,9 +212,11 @@ def lastcall(target):
     if not sip_client:
         return jsonify({'target': target, 'result': None, 'reached': False})
     data = sip_client.last_call(target)
-    # delivered = the far end was reached and it wasn't a failure outcome
-    data['delivered'] = bool(
-        data.get('reached') and data.get('result') in ('cancelled', 'answered', 'ended'))
+    # delivered = the far end was reached (any provisional/answer). These openers
+    # "ring then reject" to signal open, so a 486/488/603 reject AFTER ringing is
+    # a success, not a failure — only a call that never reached the far end
+    # (no_response) counts as not delivered.
+    data['delivered'] = bool(data.get('reached'))
     data['hangup_timeout'] = sip_client.hangup_timeout
     return jsonify(data)
 
