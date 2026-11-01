@@ -23,6 +23,7 @@ body {
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
+    min-height: 100dvh;   /* excludes mobile browser chrome */
     display: flex;
     justify-content: center;
     align-items: center;
@@ -131,3 +132,68 @@ h1 {
 .info-text p { margin: 4px 0; }
 .info-text a { color: var(--green-dim); text-decoration: none; border-bottom: 1px dotted var(--green-deep); }
 .info-text a:hover { color: var(--green); border-bottom-color: var(--green); }
+
+/* Phones / short windows: compact vertical spacing and let the buttons
+   share the remaining height, so the whole view fits without scrolling. */
+@media (max-width: 600px), (max-height: 700px) {
+    body {
+        padding: 12px;
+        padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+                 max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+        align-items: stretch;
+    }
+
+    .container {
+        display: flex;
+        flex-direction: column;
+        padding: 16px;
+        max-height: calc(100dvh - 24px);
+        border-radius: 10px;
+    }
+
+    h1 { font-size: 20px; margin-bottom: 12px; }
+
+    .info-box {
+        display: flex;
+        justify-content: center;
+        align-items: baseline;
+        gap: 8px;
+        padding: 8px 12px;
+        margin-bottom: 12px;
+    }
+    .info-box p:first-child { margin-bottom: 0; }
+    .status-text { font-size: 14px; }
+
+    .buttons-container {
+        flex: 1 1 auto;
+        min-height: 0;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 0;
+    }
+
+    .call-button {
+        flex: 1 1 0;
+        min-height: 48px;
+        max-height: 120px;
+        padding: 10px 12px;
+        font-size: 17px;
+    }
+
+    .status-message {
+        margin-top: 12px;
+        padding: 8px;
+        font-size: 13px;
+        min-height: 36px;
+    }
+
+    .info-text { margin-top: 10px; font-size: 11px; }
+    .info-text p { margin: 2px 0; }
+}
+
+/* Very short viewports (landscape phones, tiny screens): tighten further. */
+@media (max-height: 500px) {
+    h1 { display: none; }
+    .call-button { min-height: 40px; font-size: 15px; padding: 6px 12px; }
+    .info-text p:first-child { display: none; }
+}
