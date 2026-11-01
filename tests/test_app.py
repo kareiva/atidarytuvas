@@ -61,8 +61,8 @@ def client():
 class TestTargetMeta:
     def test_default_labels(self):
         assert app_module._target_label("GATE") == "Parking Gate"
-        assert app_module._target_label("DOOR") == "Main Entrance"
-        assert app_module._target_label("LAB") == "Lab"
+        assert app_module._target_label("DOOR") == "Main Door"
+        assert app_module._target_label("LAB") == "Lab (coming soon)"
 
     def test_label_env_override(self, monkeypatch):
         monkeypatch.setenv("PHONE_LABEL_LAB", "Workshop")
