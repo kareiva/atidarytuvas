@@ -50,7 +50,7 @@ for key, value in os.environ.items():
 
 # Friendly UI labels + display order. Internal ids (DOOR/GATE/LAB) are kept for
 # /call; labels/order are overridable via PHONE_LABEL_<NAME> / PHONE_ORDER_<NAME>.
-DEFAULT_LABELS = {"GATE": "Parking Gate", "DOOR": "Main Entrance", "LAB": "Lab"}
+DEFAULT_LABELS = {"GATE": "Parking Gate", "DOOR": "Main Door", "LAB": "Lab (coming soon)"}
 DEFAULT_ORDER = {"GATE": 1, "DOOR": 2, "LAB": 3}
 
 
