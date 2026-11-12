@@ -134,6 +134,7 @@ are display-only, so buttons can be renamed without touching the openers.
   `reached`, `status`, `first_response_code`, `ring_seconds`, `source`,
   `delivered`, `in_progress`, `hangup_timeout`). The UI polls this after dialling
   to show green/red.
+- `GET /healthz` — 200 when SIP is registered and the last REGISTER is fresh (`SIP_HEALTH_MAX_AGE`, default 700 s), else 503. For k8s startup, readiness and liveness probes. The first request also starts SIP.
 - `GET /metrics` — Prometheus exposition.
 
 ---

@@ -38,6 +38,7 @@ Note: `make_call` starts the auto-hangup timer as soon as the INVITE is sent (no
 - **GET /status**: SIP registration status
 - **GET /targets**: ordered `[{id, label}, …]` (friendly labels; see below)
 - **POST /call**: `{"target": "DOOR"}` (target = the id, not the label)
+- **GET /healthz**: k8s probe; 200 when SIP is registered and fresh, else 503. Reads cached metrics only (no PJSIP call).
 - **GET /metrics**: Prometheus exposition (see Metrics & Observability)
 
 ## Configuration

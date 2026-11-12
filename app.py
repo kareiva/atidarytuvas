@@ -221,6 +221,17 @@ def lastcall(target):
     return jsonify(data)
 
 
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    """k8s startup/readiness/liveness probe: 200 when SIP is registered and the
+    last successful REGISTER is fresh, else 503. The first request also starts
+    the SIP client (before_request), so an httpGet probe starts SIP at pod start."""
+    if not sip_client:
+        return jsonify({'healthy': False, 'reason': 'sip client not initialized'}), 503
+    h = sip_client.health()
+    return jsonify(h), (200 if h['healthy'] else 503)
+
+
 @app.route('/metrics', methods=['GET'])
 def metrics():
     """Prometheus metrics: registration state + per-target call attempts,
