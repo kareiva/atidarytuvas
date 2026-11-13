@@ -31,6 +31,12 @@ class FakeSip:
         return {"registered": True, "has_active_call": False,
                 "proxy": "sips.peoplefone.lt:5060", "username": "90852528635"}
 
+    healthy = True
+
+    def health(self):
+        return {"healthy": self.healthy, "reg_status": 200 if self.healthy else 408,
+                "reg_age_seconds": 10.0, "max_age_seconds": 700.0}
+
     def render_metrics(self):
         return b"gate_sip_registered 1\n"
 
@@ -100,6 +106,18 @@ class TestRoutes:
         data = client.get("/status").get_json()
         assert data["sip_client_initialized"] is True
         assert data["registered"] is True
+
+    def test_healthz_ok(self, client):
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.get_json()["healthy"] is True
+
+    def test_healthz_unhealthy_503(self, client):
+        app_module.sip_client.healthy = False
+        try:
+            assert client.get("/healthz").status_code == 503
+        finally:
+            app_module.sip_client.healthy = True
 
     def test_metrics_endpoint(self, client):
         resp = client.get("/metrics")

@@ -399,6 +399,29 @@ class SIPClient:
             self.logger.error(f"Error checking registration status: {e}")
             return False
 
+    def health(self, max_age=None, now=None):
+        """SIP health for k8s probes, from the cached registration metrics only.
+
+        Healthy = last registration status is 200 and the last successful
+        REGISTER is younger than max_age seconds (default SIP_HEALTH_MAX_AGE
+        or 700: the account re-registers every 300 s, so one miss is allowed).
+        Does not call PJSIP, so any thread may call it.
+        """
+        if max_age is None:
+            try:
+                max_age = float(os.getenv("SIP_HEALTH_MAX_AGE", "700"))
+            except ValueError:
+                max_age = 700.0
+        now = time.time() if now is None else now
+        m = self.metrics
+        with m.lock:
+            status, last_ok = m.reg_status, m.reg_last_ok_ts
+        age = (now - last_ok) if last_ok else None
+        ok = status == 200 and age is not None and age < max_age
+        return {"healthy": ok, "reg_status": status,
+                "reg_age_seconds": None if age is None else round(age, 1),
+                "max_age_seconds": max_age}
+
     def get_status(self):
         return {
             'initialized': self.endpoint is not None and self.account is not None,

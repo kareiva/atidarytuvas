@@ -165,6 +165,38 @@ class _NullLogger:
     def registration_event(self, *a): pass
 
 
+class TestHealth:
+    def test_unhealthy_before_first_register(self):
+        h = _client().health(max_age=700, now=1000.0)
+        assert h["healthy"] is False and h["reg_age_seconds"] is None
+
+    def test_healthy_after_register(self):
+        c = _client()
+        c.metrics.record_registration(200)
+        c.metrics.reg_last_ok_ts = 1000.0
+        h = c.health(max_age=700, now=1100.0)
+        assert h["healthy"] is True and h["reg_age_seconds"] == 100.0
+
+    def test_stale_register_is_unhealthy(self):
+        c = _client()
+        c.metrics.record_registration(200)
+        c.metrics.reg_last_ok_ts = 1000.0
+        assert c.health(max_age=700, now=1700.0)["healthy"] is False
+
+    def test_failed_reregister_is_unhealthy(self):
+        c = _client()
+        c.metrics.record_registration(200)
+        c.metrics.record_registration(408)
+        assert c.health(max_age=700)["healthy"] is False
+
+    def test_max_age_from_env(self, monkeypatch):
+        monkeypatch.setenv("SIP_HEALTH_MAX_AGE", "60")
+        c = _client()
+        c.metrics.record_registration(200)
+        c.metrics.reg_last_ok_ts = 1000.0
+        assert c.health(now=1100.0)["healthy"] is False
+
+
 class TestRenderMetrics:
     def test_contains_core_series(self):
         c = _client()
